@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+    NO_DEVICE_OPERATION_MATCHES,
     collapseMultideviceOperations,
     matchDeviceOperationOrdersToPerf,
     matchDeviceOperationsToPerf,
@@ -337,6 +338,34 @@ describe('matchDeviceOperationOrdersToPerf', () => {
                 1,
             ),
         ).toEqual([]);
+    });
+});
+
+// The match is memoised on inputs that settle one query at a time while a report
+// loads, so each failed attempt handing out a new `[]` changed the result's identity
+// — and rebuilt everything derived from it — without the result changing.
+describe('a failed match', () => {
+    it.each([
+        ['no device operations', orderCandidates([], []), perfRowsFor(['Alpha']), 1],
+        ['more device operations than rows', orderCandidates([mapping('Alpha', 1)], []), [], 1],
+        ['a mismatched name', orderCandidates([mapping('Alpha', 1)], [mapping('Alpha', 1)]), perfRowsFor(['Beta']), 2],
+        [
+            'a function-end order that is not a reordering',
+            orderCandidates([mapping('Alpha', 1)], [mapping('Beta', 1)]),
+            perfRowsFor(['Beta']),
+            1,
+        ],
+    ])('returns one shared, frozen empty result for %s', (_label, candidates, perfRows, numDevices) => {
+        const matched = matchDeviceOperationOrdersToPerf(candidates, perfRows, numDevices);
+
+        expect(matched).toBe(NO_DEVICE_OPERATION_MATCHES);
+        expect(Object.isFrozen(matched)).toBe(true);
+    });
+
+    it('returns the shared empty result from the single-order match too', () => {
+        expect(matchDeviceOperationsToPerf([mapping('Alpha', 1)], perfRowsFor(['Beta']), 2)).toBe(
+            NO_DEVICE_OPERATION_MATCHES,
+        );
     });
 });
 

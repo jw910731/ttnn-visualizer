@@ -59,7 +59,6 @@ const matmulOp: OperationDescription = {
     error: null,
     duration: 1,
     arguments: [],
-    processedConnections: [],
     deviceOperationNameList: ['Matmul'],
 };
 

@@ -246,7 +246,6 @@ export interface OperationDescription extends Operation {
         value: string;
         parsedValue: MemoryConfig | null;
     }[];
-    processedConnections: DeviceOperationNode[];
     deviceOperationNameList: string[]; // List of device operation names. actual device ops only
 }
 

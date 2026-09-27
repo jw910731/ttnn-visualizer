@@ -4,7 +4,7 @@
 
 import { Helmet } from 'react-helmet-async';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Size, Tab, Tabs } from '@blueprintjs/core';
+import { NumberRange, Size, Tab, Tabs } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
 import { useAtom, useAtomValue } from 'jotai';
 import { HttpStatusCode } from 'axios';
@@ -31,7 +31,7 @@ import {
 } from '../store/app';
 import PerformanceChartsTab from '../components/performance/PerformanceChartsTab';
 import { Marker, MarkerColours } from '../definitions/PerfTable';
-import { TypedPerfTableRow } from '../model/PerfTable';
+import { PerfTableRow, TypedPerfTableRow } from '../model/PerfTable';
 import { L1PressureStatus } from '../model/L1Pressure';
 import { annotatePerfHeuristicFlags } from '../functions/computePerfHeuristicFlags';
 import { resolveMaxCores } from '../functions/getCoreCount';
@@ -44,8 +44,15 @@ import { OpType, PerfTabIds } from '../definitions/Performance';
 import { StackedColumnKeys, StackedPerfRow, TypedStackedPerfRow } from '../definitions/StackedPerfTable';
 
 const INITIAL_TAB_ID = PerfTabIds.TABLE;
+const EMPTY_PERF_ROWS: PerfTableRow[] = [];
 const EMPTY_COMPARISON_ROWS: TypedPerfTableRow[][] = [];
 const EMPTY_COMPARISON_MAX_CORES: number[] = [];
+
+interface OpCodeSelection {
+    /** The `opCodeOptions` the selection was made from, as `opCodeOptionsKey` spells them. */
+    opCodeOptionsKey: string;
+    opCodes: Marker[];
+}
 
 export default function Performance() {
     const [comparisonReportList, setComparisonReportList] = useAtom(comparisonPerformanceReportListAtom);
@@ -53,14 +60,7 @@ export default function Performance() {
     const activeReportFolderName = useAtomValue(activePerformanceReportFolderNameAtom);
     const [selectedRange, setSelectedRange] = useAtom(selectedPerformanceRangeAtom);
     const [selectedTabId, setSelectedTabId] = useAtom(perfSelectedTabAtom);
-    const [selectedOpCodes, setSelectedOpCodes] = useState<Marker[]>([]);
-    const [hasUserChangedOpCodeFilter, setHasUserChangedOpCodeFilter] = useState(false);
-    const [appliedOpCodeOptionsKey, setAppliedOpCodeOptionsKey] = useState<string | null>(null);
-
-    const setSelectedOpCodesFromUser = useCallback((update: Marker[] | ((previous: Marker[]) => Marker[])) => {
-        setHasUserChangedOpCodeFilter(true);
-        setSelectedOpCodes(update);
-    }, []);
+    const [userOpCodeSelection, setUserOpCodeSelection] = useState<OpCodeSelection | null>(null);
 
     const {
         data,
@@ -120,6 +120,25 @@ export default function Performance() {
         [opCodeOptions],
     );
 
+    // A selection lasts only as long as the options it was made from: new options (another
+    // report, a comparison added) start from every op code again. Dropped rather than only
+    // ignored, so returning to the earlier options cannot revive it, and here rather than in
+    // an effect, which would cost a commit of its own.
+    if (userOpCodeSelection !== null && userOpCodeSelection.opCodeOptionsKey !== opCodeOptionsKey) {
+        setUserOpCodeSelection(null);
+    }
+
+    // Derived during render: syncing the selection into state from an effect would render the
+    // route and its active tab a second time whenever the options change.
+    const hasUserChangedOpCodeFilter =
+        userOpCodeSelection !== null && userOpCodeSelection.opCodeOptionsKey === opCodeOptionsKey;
+    const selectedOpCodes = hasUserChangedOpCodeFilter ? userOpCodeSelection.opCodes : opCodeOptions;
+
+    const setSelectedOpCodesFromUser = useCallback(
+        (opCodes: Marker[]) => setUserOpCodeSelection({ opCodeOptionsKey, opCodes }),
+        [opCodeOptionsKey],
+    );
+
     // Prefer the user's selected range, but don't wait on RangeSlider's sync effect — when
     // selectedRange is still null (or left over from a disjoint prior report) fall back to
     // the report's full span so we never flash "No data to display" after the skeleton.
@@ -128,28 +147,39 @@ export default function Performance() {
     // what "misses the report" means. Clamping an overhanging selection is row-set neutral
     // here — every row id already lies inside `perfRange` — so only the widen branch, which
     // produces the full-span fallback, changes what the table shows.
-    const rangeForTable = useMemo(() => {
-        if (!perfRange) {
-            return selectedRange;
-        }
+    let rangeBounds: NumberRange | null = selectedRange;
 
-        if (!selectedRange) {
-            return perfRange;
-        }
+    if (perfRange) {
+        rangeBounds = selectedRange
+            ? clampSelectionToRange(selectedRange[0], selectedRange[1], perfRange[0], perfRange[1])
+            : perfRange;
+    }
 
-        return clampSelectionToRange(selectedRange[0], selectedRange[1], perfRange[0], perfRange[1]);
-    }, [selectedRange, perfRange]);
+    const rangeStart = rangeBounds?.[0] ?? null;
+    const rangeEnd = rangeBounds?.[1] ?? null;
 
-    const rangedData = useMemo(
-        () =>
-            rangeForTable && perfData
-                ? perfData.filter((row) => {
-                      const rowId = typeof row?.id === 'number' ? row.id : parseInt(row?.id, 10);
-                      return rowId >= rangeForTable[0] && rowId <= rangeForTable[1];
-                  })
-                : [],
-        [rangeForTable, perfData],
+    // Held by value: the slider re-sets its atom to equal bounds as it syncs, and the clamp
+    // returns a new tuple each time, either of which would rebuild every enriched row below.
+    const rangeForTable = useMemo<NumberRange | null>(
+        () => (rangeStart !== null && rangeEnd !== null ? [rangeStart, rangeEnd] : null),
+        [rangeStart, rangeEnd],
     );
+
+    const rangedData = useMemo(() => {
+        if (!rangeForTable || !perfData) {
+            return EMPTY_PERF_ROWS;
+        }
+
+        // `perfRange` spans every row id, so a range covering it keeps every row — no copy needed.
+        if (perfRange && rangeForTable[0] <= perfRange[0] && rangeForTable[1] >= perfRange[1]) {
+            return perfData;
+        }
+
+        return perfData.filter((row) => {
+            const rowId = typeof row?.id === 'number' ? row.id : parseInt(row?.id, 10);
+            return rowId >= rangeForTable[0] && rowId <= rangeForTable[1];
+        });
+    }, [rangeForTable, perfData, perfRange]);
 
     // Report finished but range not yet derived (should be rare with the fallback above).
     const isTableLoading = isLoadingPerformance || (!!perfData?.length && rangeForTable === null);
@@ -194,16 +224,14 @@ export default function Performance() {
             return enrichedData;
         }
 
+        // Only reachable once the user has cleared every op code: an untouched selection is
+        // opCodeOptions itself, whose emptiness the check above already handled.
         if (selectedOpCodes.length === 0) {
-            if (!hasUserChangedOpCodeFilter) {
-                return enrichedData;
-            }
-
             return [];
         }
 
         return enrichedData.filter((row) => row.raw_op_code !== undefined && selectedOpCodeSet.has(row.raw_op_code));
-    }, [enrichedData, hasUserChangedOpCodeFilter, opCodeOptions.length, selectedOpCodes.length, selectedOpCodeSet]);
+    }, [enrichedData, opCodeOptions.length, selectedOpCodes.length, selectedOpCodeSet]);
 
     const filteredEnrichedComparisonData = useMemo(() => {
         if (opCodeOptions.length === 0) {
@@ -211,23 +239,13 @@ export default function Performance() {
         }
 
         if (selectedOpCodes.length === 0) {
-            if (!hasUserChangedOpCodeFilter) {
-                return enrichedComparisonData;
-            }
-
             return enrichedComparisonData.map(() => []);
         }
 
         return enrichedComparisonData.map((dataset) =>
             dataset.filter((row) => row.raw_op_code !== undefined && selectedOpCodeSet.has(row.raw_op_code)),
         );
-    }, [
-        enrichedComparisonData,
-        hasUserChangedOpCodeFilter,
-        opCodeOptions.length,
-        selectedOpCodes.length,
-        selectedOpCodeSet,
-    ]);
+    }, [enrichedComparisonData, opCodeOptions.length, selectedOpCodes.length, selectedOpCodeSet]);
     const enrichedStackedData = useMemo(() => (stackedData ? enrichStackedRowData(stackedData) : []), [stackedData]);
     const enrichedComparisonStackedData = useMemo(
         () => comparisonStackedData?.map((dataset) => enrichStackedRowData(dataset)) || [],
@@ -266,16 +284,6 @@ export default function Performance() {
             setSelectedRange([perfRange[0], perfRange[1]]);
         }
     }, [comparisonReportList, setSelectedRange, perfRange]);
-
-    useEffect(() => {
-        if (appliedOpCodeOptionsKey === null || opCodeOptionsKey !== appliedOpCodeOptionsKey) {
-            // Has sufficient guard conditions
-            // eslint-disable-next-line react-hooks/set-state-in-effect
-            setAppliedOpCodeOptionsKey(opCodeOptionsKey);
-            setHasUserChangedOpCodeFilter(false);
-            setSelectedOpCodes(opCodeOptions);
-        }
-    }, [appliedOpCodeOptionsKey, opCodeOptionsKey, opCodeOptions]);
 
     if (perfDataError?.status === HttpStatusCode.UnprocessableEntity) {
         return (

@@ -42,7 +42,6 @@ const operations: OperationDescription[] = [
         error: null,
         duration: 1,
         arguments: [],
-        processedConnections: [],
         deviceOperationNameList: ['Matmul'],
     },
     {
@@ -57,7 +56,6 @@ const operations: OperationDescription[] = [
         error: null,
         duration: 1,
         arguments: [],
-        processedConnections: [],
         deviceOperationNameList: [],
     },
     {
@@ -72,7 +70,6 @@ const operations: OperationDescription[] = [
         error: null,
         duration: 1,
         arguments: [],
-        processedConnections: [],
         deviceOperationNameList: [],
     },
 ];

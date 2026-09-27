@@ -11,7 +11,7 @@ import { getDefaultStore } from 'jotai';
 
 import type { NodeChange } from '@xyflow/react';
 
-import { type DeviceOperationNode, type Node, NodeType, type OperationDescription } from '../src/model/APIData';
+import { type Node, type OperationDescription } from '../src/model/APIData';
 import type {
     OpGraphBuildOptions,
     OpGraphBuiltGraph,
@@ -21,6 +21,7 @@ import type {
     OpGraphSourceOperation,
 } from '../src/components/operation-graph/opGraphTypes';
 import { OpGraphGrouping } from '../src/components/operation-graph/opGraphTypes';
+import { capturedFrame } from './helpers/capturedGraphFixtures';
 
 // A layout is the most expensive thing this view can do, and every cheap
 // interaction — typing, selecting, stepping matches — is one dependency array away
@@ -422,36 +423,16 @@ const rebuildWith = (operations: OperationDescription[], deviceSubgraphs: OpGrap
     });
 };
 
-const tensorNode = (tensorId: number): Node =>
-    ({
-        id: tensorId,
-        node_type: NodeType.tensor,
-        params: { tensor_id: tensorId, shape: 'Shape([1, 32])' },
-        connections: [],
-        inputs: [],
-        outputs: [],
-        stacking_level: 0,
-    }) as unknown as Node;
-
-const deviceFrames = (...names: string[]): DeviceOperationNode[] =>
-    names.map((name, index) => {
+// A chain of device operations as the capture records it, each consuming the
+// tensor the one before produced.
+const capturedDeviceOperations = (...names: string[]): Node[] =>
+    names.flatMap((name, index) => {
         const id = index + 1;
-        return {
-            id,
-            node_type: NodeType.function_start,
-            params: { name },
-            inputs: index === 0 ? [] : [tensorNode(index)],
-            outputs: [tensorNode(id)],
-            input_tensors: index === 0 ? [] : [index],
-            connections: [],
-            arguments: [],
-            stack_trace: [],
-            stacking_level: 0,
-        } as unknown as DeviceOperationNode;
+        return capturedFrame({ id, name, consumes: index === 0 ? [] : [index], produces: [id] });
     });
 
 const withDeviceOperations = (op: OperationDescription, names: string[]): OperationDescription =>
-    ({ ...op, processedConnections: deviceFrames(...names) }) as OperationDescription;
+    ({ ...op, device_operations: capturedDeviceOperations(...names) }) as OperationDescription;
 
 const hasClass = (element: { className?: string }, className: string) =>
     (element.className ?? '').split(' ').includes(className);

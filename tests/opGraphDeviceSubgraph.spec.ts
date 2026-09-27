@@ -8,49 +8,19 @@ import {
     countDeviceOperations,
     getDeviceNodeId,
 } from '../src/components/operation-graph/opGraphDeviceSubgraph';
-import { type DeviceOperationNode, type Node, NodeType, type OperationDescription } from '../src/model/APIData';
+import { type Node, type OperationDescription } from '../src/model/APIData';
+import { UNREADABLE_CAPTURED_TENSOR, capturedFrame, capturedTensor } from './helpers/capturedGraphFixtures';
 
 const OPERATION_ID = 4;
 
-const tensor = (tensorId: number): Node =>
-    ({
-        id: tensorId,
-        node_type: NodeType.tensor,
-        params: { tensor_id: tensorId, shape: 'Shape([1, 32])' },
-        connections: [],
-        inputs: [],
-        outputs: [],
-        stacking_level: 0,
-    }) as unknown as Node;
+// Frames go in as the capture records them, so every case also covers the tensor
+// resolution the subgraph does on expansion.
+const frame = capturedFrame;
 
-interface FrameSpec {
-    id: number;
-    name: string;
-    consumes?: number[];
-    produces?: number[];
-}
+const operationWith = (frames: Node[][]): OperationDescription =>
+    ({ id: OPERATION_ID, device_operations: frames.flat() }) as unknown as OperationDescription;
 
-// `processInputsOutputs` has already resolved `inputs`/`outputs` by the time the
-// derivation sees a frame, so the fixture starts from there rather than from a raw
-// `function_start` / `function_end` stream.
-const frame = ({ id, name, consumes = [], produces = [] }: FrameSpec): DeviceOperationNode =>
-    ({
-        id,
-        node_type: NodeType.function_start,
-        params: { name },
-        inputs: consumes.map(tensor),
-        outputs: produces.map(tensor),
-        input_tensors: consumes,
-        connections: [],
-        arguments: [],
-        stack_trace: [],
-        stacking_level: 0,
-    }) as unknown as DeviceOperationNode;
-
-const operationWith = (frames: DeviceOperationNode[]): OperationDescription =>
-    ({ id: OPERATION_ID, processedConnections: frames }) as unknown as OperationDescription;
-
-const subgraphOf = (frames: DeviceOperationNode[]) => buildDeviceOperationSubgraph(operationWith(frames));
+const subgraphOf = (frames: Node[][]) => buildDeviceOperationSubgraph(operationWith(frames));
 
 const nodeId = (frameId: number) => getDeviceNodeId(OPERATION_ID, frameId);
 
@@ -109,6 +79,22 @@ describe('buildDeviceOperationSubgraph', () => {
             expect(countDeviceOperations(operationWith(frames))).toBe(2);
         });
 
+        // The capture is keyed by node id and the last node written under one wins,
+        // so a reused id can retire a frame or rename it. The count reads the raw
+        // stream rather than the resolved frames and has to land on the same set.
+        it('counts what expanding would draw when the capture reuses a node id', () => {
+            const frames = [
+                frame({ id: 1, name: 'AlphaDeviceOperation', produces: [1] }),
+                frame({ id: 2, name: 'BetaDeviceOperation', consumes: [1], produces: [2] }),
+                frame({ id: 3, name: 'GammaDeviceOperation', consumes: [2] }),
+                [{ ...capturedTensor(3), id: 1 }],
+                frame({ id: 2, name: 'ttnn.relay' }),
+            ];
+
+            expect(subgraphOf(frames)?.nodes.map((node) => node.label)).toEqual(['GammaDeviceOperation()']);
+            expect(countDeviceOperations(operationWith(frames))).toBe(1);
+        });
+
         it('reports nothing to draw rather than an empty box', () => {
             expect(subgraphOf([])).toBeNull();
             expect(subgraphOf([frame({ id: 1, name: 'ttnn.embedding' })])).toBeNull();
@@ -129,14 +115,8 @@ describe('buildDeviceOperationSubgraph', () => {
 
     describe('edges', () => {
         it('does not join frames that share only an unreadable tensor id', () => {
-            const unreadable = {
-                ...tensor(1),
-                params: { tensor_id: 'nope', shape: 'Shape([1, 32])' },
-            } as unknown as Node;
-            const alpha = frame({ id: 1, name: 'AlphaDeviceOperation' });
-            const beta = frame({ id: 2, name: 'BetaDeviceOperation' });
-            alpha.outputs = [unreadable];
-            beta.inputs = [unreadable];
+            const alpha = frame({ id: 1, name: 'AlphaDeviceOperation', produces: [UNREADABLE_CAPTURED_TENSOR] });
+            const beta = frame({ id: 2, name: 'BetaDeviceOperation', consumes: [UNREADABLE_CAPTURED_TENSOR] });
 
             const subgraph = subgraphOf([alpha, beta]);
             expect(subgraph?.edges).toEqual([]);
@@ -144,14 +124,8 @@ describe('buildDeviceOperationSubgraph', () => {
         });
 
         it('still joins a readable tensor sitting next to an unreadable one', () => {
-            const unreadable = {
-                ...tensor(1),
-                params: { tensor_id: 'nope', shape: 'Shape([1, 32])' },
-            } as unknown as Node;
-            const alpha = frame({ id: 1, name: 'AlphaDeviceOperation', produces: [1] });
-            const beta = frame({ id: 2, name: 'BetaDeviceOperation', consumes: [1] });
-            alpha.outputs = [...(alpha.outputs ?? []), unreadable];
-            beta.inputs = [...(beta.inputs ?? []), unreadable];
+            const alpha = frame({ id: 1, name: 'AlphaDeviceOperation', produces: [1, UNREADABLE_CAPTURED_TENSOR] });
+            const beta = frame({ id: 2, name: 'BetaDeviceOperation', consumes: [1, UNREADABLE_CAPTURED_TENSOR] });
 
             const subgraph = subgraphOf([alpha, beta]);
             expect(endpointsOf(subgraph!)).toEqual([[nodeId(1), nodeId(2)]]);

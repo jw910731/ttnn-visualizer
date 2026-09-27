@@ -2,7 +2,7 @@
 //
 // SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
 
-import { JSX, useEffect, useMemo, useState } from 'react';
+import { JSX, memo, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import {
     Button,
@@ -142,6 +142,10 @@ const PerformanceReport = ({
     const [stackedFilters, setStackedFilters] = useState<StackedTableFilter>(
         Object.fromEntries(filterableStackedColumnKeys.map((key) => [key, ''])) as StackedTableFilter,
     );
+    // The search field shows each keystroke at once, while filtering every row by the query and
+    // re-rendering the tables with the result follow at a lower priority, so typing is not held up.
+    const deferredFilters = useDeferredValue(filters);
+    const deferredStackedFilters = useDeferredValue(stackedFilters);
 
     const isSignpostsDisabled = !signposts || signposts.length === 0;
     const isTableLoading = isLoading || isComparisonLoading;
@@ -165,7 +169,7 @@ const PerformanceReport = ({
         data,
         comparisonData,
         isNormalisationApplied,
-        filters,
+        filters: deferredFilters,
         activeMathFilterList,
         activeRawOpCodeFilterList,
         activeBufferTypeFilterList,
@@ -225,11 +229,11 @@ const PerformanceReport = ({
         () =>
             sortAndFilterStackedPerfTableData(
                 stackedData,
-                stackedFilters,
+                deferredStackedFilters,
                 activeRawOpCodeFilterList,
                 isGroupedByMemory,
             ),
-        [stackedData, stackedFilters, activeRawOpCodeFilterList, isGroupedByMemory],
+        [stackedData, deferredStackedFilters, activeRawOpCodeFilterList, isGroupedByMemory],
     );
 
     const filteredComparisonStackedRowsList = useMemo(
@@ -237,12 +241,12 @@ const PerformanceReport = ({
             comparisonStackedData.map((dataset) =>
                 sortAndFilterStackedPerfTableData(
                     dataset,
-                    stackedFilters,
+                    deferredStackedFilters,
                     activeRawOpCodeFilterList,
                     isGroupedByMemory,
                 ),
             ),
-        [comparisonStackedData, stackedFilters, activeRawOpCodeFilterList, isGroupedByMemory],
+        [comparisonStackedData, deferredStackedFilters, activeRawOpCodeFilterList, isGroupedByMemory],
     );
     const filteredComparisonStackedRows = useMemo(
         () => filteredComparisonStackedRowsList[comparisonIndex] || [],
@@ -652,7 +656,7 @@ const PerformanceReport = ({
                             isStackedView ? (
                                 <StackedPerformanceTable
                                     stackedData={filteredStackedRows}
-                                    filters={filters}
+                                    filters={deferredFilters}
                                     stackedComparisonData={filteredComparisonStackedRowsList}
                                     reportFolderName={activeReportFolderName}
                                     maxCores={maxCores}
@@ -662,7 +666,7 @@ const PerformanceReport = ({
                                 <PerfTable
                                     data={filteredRows}
                                     comparisonData={filteredComparisonRowsList}
-                                    filters={filters}
+                                    filters={deferredFilters}
                                     provideMatmulAdvice={provideMatmulAdvice}
                                     hiliteHighDispatch={hiliteHighDispatch}
                                     reportFolderName={activeReportFolderName}
@@ -704,7 +708,7 @@ const PerformanceReport = ({
                                                 (_, i) => i !== comparisonIndex,
                                             ),
                                         ]}
-                                        filters={filters}
+                                        filters={deferredFilters}
                                         reportFolderName={report}
                                         maxCores={comparisonMaxCores[index] ?? maxCores}
                                         isLoading={isTableLoading}
@@ -716,7 +720,7 @@ const PerformanceReport = ({
                                             filteredRows,
                                             ...filteredComparisonRowsList.filter((_, i) => i !== comparisonIndex),
                                         ]}
-                                        filters={filters}
+                                        filters={deferredFilters}
                                         provideMatmulAdvice={provideMatmulAdvice}
                                         hiliteHighDispatch={hiliteHighDispatch}
                                         reportFolderName={report}
@@ -833,4 +837,7 @@ const renderStackedGroupBy: RenderStackedGroupByProps<StackedGroupBy> = (
     );
 };
 
-export default PerformanceReport;
+// Memoised because the route re-renders with unchanged props (the range slider re-setting
+// bounds it already had, query status and atom churn), and each of those would otherwise
+// re-render the whole report and table. Every prop is therefore a primitive or a memoised value.
+export default memo(PerformanceReport);

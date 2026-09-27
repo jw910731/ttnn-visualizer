@@ -285,23 +285,94 @@ const resolveCandidate = (candidate: TextCandidate, column: ColumnDefinition) =>
 
 const isTensorTriggerRow = (row: TypedPerfTableRow | undefined) => row !== undefined && row.op_type !== OpType.SIGNPOST;
 
-/**
- * Collects, over every row rather than only the rendered window, the content that decides each
- * column's width. Comparison sub-rows count only for the columns they render.
- */
-export const getPerfTableSizing = (input: PerfTableSizingInput): PerfTableSizing => {
-    const { rows, comparisonRows, visibleColumns, isPrimaryActiveReport, activeReportComparisonIndex } = input;
-    const accumulators = visibleColumns.map(createAccumulator);
+type ColumnContent = Omit<PerfTableColumnSizing, 'column'>;
+
+/** A column's content, with every input it was measured from that can differ between calls on the same rows. */
+interface MeasuredColumn {
+    unit: ColumnDefinition['unit'];
+    decimals: ColumnDefinition['decimals'];
+    comparisonRows: TypedPerfTableRow[][];
+    hasOperations: boolean;
+    npeFileByGlobalCallCount: ReadonlyMap<number, string>;
+    content: ColumnContent;
+}
+
+// Adding or removing one column (the high-dispatch toggle, the column picker) changes nothing about
+// the others, so their measurements are kept rather than taken again over every row. Keyed weakly on
+// the rows, so a measurement lives exactly as long as the rows it was taken from and a new report
+// needs no reset.
+const measuredColumnsByRows = new WeakMap<TypedPerfTableRow[], Map<ColumnKeys, MeasuredColumn>>();
+
+const isSameDatasets = (a: TypedPerfTableRow[][], b: TypedPerfTableRow[][]) =>
+    a.length === b.length && a.every((dataset, index) => dataset === b[index]);
+
+// Only the inputs a column actually reads invalidate it: the NPE manifest arriving, say, re-measures
+// the NPE column alone. The comparison datasets are compared one by one because the comparison tab
+// hands them over in a list built afresh on every render.
+const isMeasurementCurrent = (measured: MeasuredColumn, column: ColumnDefinition, input: PerfTableSizingInput) =>
+    measured.unit === column.unit &&
+    measured.decimals === column.decimals &&
+    (column.key !== ColumnKeys.OP || measured.hasOperations === input.hasOperations) &&
+    (column.key !== ColumnKeys.GlobalCallCount ||
+        measured.npeFileByGlobalCallCount === input.npeFileByGlobalCallCount) &&
+    (!comparisonKeys.includes(column.key) || isSameDatasets(measured.comparisonRows, input.comparisonRows));
+
+const toColumnContent = (accumulator: ColumnAccumulator): ColumnContent => ({
+    widestText: resolveCandidate(accumulator.widest, accumulator.column),
+    longestRunText: resolveCandidate(accumulator.longestRun, accumulator.column),
+    isNoWrap: accumulator.isNoWrap,
+    hasIcon: accumulator.hasIcon,
+    widestMemoryLabel: accumulator.widestMemoryLabel,
+    flagSets: [...accumulator.flagSets.values()],
+    hasNpeLink: accumulator.hasNpeLink,
+});
+
+// One pass over the rows for all the columns together rather than one per column: a report's rows
+// run to tens of MB, and reading them once is markedly faster than reading them once per column.
+const measureColumns = (columns: ColumnDefinition[], input: PerfTableSizingInput): ColumnContent[] => {
+    if (columns.length === 0) {
+        return [];
+    }
+
+    const accumulators = columns.map(createAccumulator);
     const comparisonAccumulators = accumulators.filter(({ column }) => comparisonKeys.includes(column.key));
+
+    for (const row of input.rows) {
+        for (const accumulator of accumulators) {
+            considerCell(accumulator, row, true, input);
+        }
+    }
+
+    if (comparisonAccumulators.length > 0) {
+        for (const dataset of input.comparisonRows) {
+            for (const row of dataset) {
+                for (const accumulator of comparisonAccumulators) {
+                    considerCell(accumulator, row, false, input);
+                }
+            }
+        }
+    }
+
+    return accumulators.map(toColumnContent);
+};
+
+const getMeasuredColumns = (rows: TypedPerfTableRow[]): Map<ColumnKeys, MeasuredColumn> => {
+    let measuredColumns = measuredColumnsByRows.get(rows);
+
+    if (measuredColumns === undefined) {
+        measuredColumns = new Map<ColumnKeys, MeasuredColumn>();
+        measuredColumnsByRows.set(rows, measuredColumns);
+    }
+
+    return measuredColumns;
+};
+
+const getAdviceSizing = (rows: TypedPerfTableRow[]) => {
     const widestAdvice = createCandidate();
     const longestRunAdvice = createCandidate();
 
     for (const row of rows) {
-        for (const accumulator of accumulators) {
-            considerCell(accumulator, row, true, input);
-        }
-
-        if (input.provideMatmulAdvice && hasMatmulAdvice(row)) {
+        if (hasMatmulAdvice(row)) {
             for (const advice of row.advice) {
                 if (advice.length > widestAdvice.length) {
                     widestAdvice.length = advice.length;
@@ -318,30 +389,52 @@ export const getPerfTableSizing = (input: PerfTableSizingInput): PerfTableSizing
         }
     }
 
-    for (const dataset of comparisonRows) {
-        for (const row of dataset) {
-            for (const accumulator of comparisonAccumulators) {
-                considerCell(accumulator, row, false, input);
-            }
-        }
-    }
+    return { widestAdvice: widestAdvice.text, longestRunAdvice: longestRunAdvice.text };
+};
 
+const NO_ADVICE_SIZING = { widestAdvice: '', longestRunAdvice: '' };
+
+/**
+ * Collects, over every row rather than only the rendered window, the content that decides each
+ * column's width. Comparison sub-rows count only for the columns they render. A column already
+ * measured over the same rows is not measured again.
+ */
+export const getPerfTableSizing = (input: PerfTableSizingInput): PerfTableSizing => {
+    const { rows, comparisonRows, visibleColumns, isPrimaryActiveReport, activeReportComparisonIndex } = input;
     const activeRows = isPrimaryActiveReport ? rows : (comparisonRows[activeReportComparisonIndex ?? -1] ?? []);
+    const measuredColumns = getMeasuredColumns(rows);
+    const currentContent = visibleColumns.map((column) => {
+        const measured = measuredColumns.get(column.key);
+
+        return measured !== undefined && isMeasurementCurrent(measured, column, input) ? measured.content : null;
+    });
+    const staleColumns = visibleColumns.filter((_column, index) => currentContent[index] === null);
+    const freshContent = measureColumns(staleColumns, input);
+    let freshIndex = 0;
+
+    const columns = visibleColumns.map((column, index) => {
+        let content = currentContent[index];
+
+        if (content === null) {
+            content = freshContent[freshIndex];
+            freshIndex += 1;
+            measuredColumns.set(column.key, {
+                unit: column.unit,
+                decimals: column.decimals,
+                comparisonRows,
+                hasOperations: input.hasOperations,
+                npeFileByGlobalCallCount: input.npeFileByGlobalCallCount,
+                content,
+            });
+        }
+
+        return { column, ...content };
+    });
 
     return {
         hasTensorTrigger: activeRows.some(isTensorTriggerRow),
-        columns: accumulators.map((accumulator) => ({
-            column: accumulator.column,
-            widestText: resolveCandidate(accumulator.widest, accumulator.column),
-            longestRunText: resolveCandidate(accumulator.longestRun, accumulator.column),
-            isNoWrap: accumulator.isNoWrap,
-            hasIcon: accumulator.hasIcon,
-            widestMemoryLabel: accumulator.widestMemoryLabel,
-            flagSets: [...accumulator.flagSets.values()],
-            hasNpeLink: accumulator.hasNpeLink,
-        })),
-        widestAdvice: widestAdvice.text,
-        longestRunAdvice: longestRunAdvice.text,
+        columns,
+        ...(input.provideMatmulAdvice ? getAdviceSizing(rows) : NO_ADVICE_SIZING),
     };
 };
 

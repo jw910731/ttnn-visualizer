@@ -15,9 +15,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Provider, createStore, useAtomValue } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+    useDevices,
     useGetDeviceOperationListPerf,
     useGetDeviceOperationListPerfByOpId,
     useLinkedPerformanceReport,
+    useOpToPerfIdFiltered,
+    useOperationsList,
     usePerformanceReport,
 } from '../src/hooks/useAPI';
 import {
@@ -393,5 +396,47 @@ describe('report matching under a filtered performance tab', () => {
         rerender();
 
         expect(result.current[0]).toBe(beforeRerender);
+    });
+
+    // Each query settling re-runs the match, and a report that does not line up used to come
+    // back as a new `[]` every time. Performance.tsx keys the enrichment of every perf row on
+    // this result, so each new identity rebuilt the whole table for the same empty answer.
+    it('keeps one empty op-to-perf identity while an unmatched report settles', async () => {
+        vi.mocked(axiosInstance.get).mockImplementation((url: string) => {
+            if (url.includes(Endpoints.PERFORMANCE_RESULTS_REPORT)) {
+                return Promise.resolve({
+                    data: { report: [perfRow(2, 'Unrelated')], stacked_report: [], signposts: [] },
+                });
+            }
+
+            if (url.includes(Endpoints.OPERATIONS_LIST)) {
+                return Promise.resolve({ data: [...memoryOperations] });
+            }
+
+            if (url.includes(Endpoints.DEVICES)) {
+                return Promise.resolve({ data: [{ device_id: 0 }] });
+            }
+
+            return Promise.resolve({ data: [] });
+        });
+        const identities = new Set<unknown>();
+
+        const { result } = renderWithView(() => {
+            const opToPerfIds = useOpToPerfIdFiltered();
+            const operations = useOperationsList();
+            const devices = useDevices();
+            const linkedReport = useLinkedPerformanceReport();
+            identities.add(opToPerfIds);
+
+            return {
+                opToPerfIds,
+                isSettled: operations.isFetched && devices.isFetched && linkedReport.isFetched,
+            };
+        }, [[activeProfilerReportAtom, ACTIVE_REPORT]]);
+
+        await waitFor(() => expect(result.current.isSettled).toBe(true));
+
+        expect(result.current.opToPerfIds).toEqual([]);
+        expect(identities.size).toBe(1);
     });
 });

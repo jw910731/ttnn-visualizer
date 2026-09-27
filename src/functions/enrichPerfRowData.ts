@@ -39,7 +39,7 @@ export const getRowAttributes = (row: PerfTableRow): RowAttributes => {
 // columns tt-perf-report emits so the table reflects the same data.
 export const enrichRowData = (
     rows: PerfTableRow[],
-    opIdsMap: { perfId?: string; opId: number }[],
+    opIdsMap: readonly { perfId?: string; opId: number }[],
     l1PressureMap: Map<number, L1PressureMetrics> | null,
 ): TypedPerfTableRow[] => {
     // Build the perf-id -> op-id lookup once so enrichment stays O(N) instead of O(N·M) — the

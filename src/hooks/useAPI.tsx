@@ -45,6 +45,7 @@ import { StackedPerfRow } from '../definitions/StackedPerfTable';
 import { isDeviceOperation } from '../functions/filterOperations';
 import { normalizeBufferPagesResponse } from '../functions/normalizeBufferPagesResponse';
 import { filterByOperationRange } from '../functions/filterByOperationRange';
+import { getPerformanceRange } from '../functions/perfRangeSelection';
 import {
     activeMlirJsonAtom,
     activeNpeOpTraceAtom,
@@ -90,7 +91,6 @@ import { RemoteFolder } from '../model/RemoteConnection';
 import createToastNotification from '../functions/createToastNotification';
 import { ToastType } from '../definitions/ToastType';
 import { buildLateDeallocationReports } from '../functions/lateDeallocation';
-import { processInputsOutputs } from '../functions/processMemoryAllocations';
 import { SemVer, semverParse } from '../functions/semverParse';
 import { parseNpeAxiosResponseData } from '../functions/parseNpeAxiosResponseData';
 import { throwNpeClientAxiosError } from '../functions/throwNpeClientAxiosError';
@@ -104,8 +104,14 @@ const EMPTY_PERF_RETURN = { report: [], stacked_report: [], signposts: [] };
  *
  * Older report databases stored the node identifier under `counter` while
  * the frontend (and newer backends) expect `id`. Rather than transforming
- * the JSON on the server, we intercept the response here and rewrite any
- * `counter` field to `id`. Nodes that already expose `id` are left alone.
+ * the JSON on the server, we intercept the response here and copy `counter`
+ * into `id` on any node that lacks one. Nodes that already expose `id` are
+ * left alone.
+ *
+ * `counter` itself stays: nothing reads it, and `delete` is not free. It moves
+ * the object into V8's dictionary mode, and a large report carries over half a
+ * million of these nodes — each then costs more memory and every later walk
+ * over them (`processInputsOutputs` among others) runs several times slower.
  *
  * Mutates the passed array in place for performance — these arrays can be
  * very large and are consumed immediately by the hooks below.
@@ -120,7 +126,6 @@ const updateDeviceOperationId = (nodes: unknown): void => {
             if (!('id' in typedNode) || typedNode.id === undefined) {
                 typedNode.id = typedNode.counter;
             }
-            delete typedNode.counter;
         }
     }
 };
@@ -244,7 +249,6 @@ const fetchOperations = async (): Promise<OperationDescription[]> => {
             inputs,
             arguments: argumentsWithParsedValues,
             deviceOperationNameList: getDeviceOperationNameList(operation, NodeType.function_start),
-            processedConnections: processInputsOutputs(operation.device_operations),
         } as OperationDescription;
     });
 };
@@ -893,11 +897,21 @@ const getDeviceOperationOrderCandidates = memoiseLatest(
 
 const getDeviceOperationListPerf = memoiseLatest(matchDeviceOperationOrdersToPerf);
 
-const getOpToPerfIds = memoiseLatest((matched: DeviceOperationMapping[]) =>
-    matched.map(({ id, perfData }) => ({ opId: id, perfId: perfData?.id })),
+interface OpToPerfId {
+    opId: number;
+    perfId: string | undefined;
+}
+
+// Shared for the same reason as `NO_DEVICE_OPERATION_MATCHES`: an empty match maps
+// to one identity however often another input displaces this cache of one, where a
+// fresh `[]` would change `opIdsMap` and rebuild every enriched perf row with it.
+const NO_OP_TO_PERF_IDS: readonly OpToPerfId[] = Object.freeze([]);
+
+const getOpToPerfIds = memoiseLatest((matched: readonly DeviceOperationMapping[]): readonly OpToPerfId[] =>
+    matched.length === 0 ? NO_OP_TO_PERF_IDS : matched.map(({ id, perfData }) => ({ opId: id, perfId: perfData?.id })),
 );
 
-const getDeviceOperationListPerfByOpId = memoiseLatest((matched: DeviceOperationMapping[]) => {
+const getDeviceOperationListPerfByOpId = memoiseLatest((matched: readonly DeviceOperationMapping[]) => {
     const mappingsByOpId = new Map<number, DeviceOperationMapping[]>();
 
     for (const mapping of matched) {
@@ -966,17 +980,9 @@ export const useOpToPerfIdFiltered = () => getOpToPerfIds(useGetDeviceOperationL
 export const usePerformanceRange = (): NumberRange | null => {
     const activeReportFolderName = useAtomValue(activePerformanceReportFolderNameAtom);
     const { data: perfData } = usePerformanceReport(activeReportFolderName);
+    const rows = perfData?.report;
 
-    return useMemo(
-        () =>
-            perfData?.report?.length
-                ? [
-                      Math.min(...perfData.report.map((data) => parseInt(data.id, 10))),
-                      Math.max(...perfData.report.map((data) => parseInt(data.id, 10))),
-                  ]
-                : null,
-        [perfData],
-    );
+    return useMemo(() => getPerformanceRange(rows), [rows]);
 };
 
 interface ReportMetadata {

@@ -6,7 +6,7 @@ import { Button, InputGroup, RangeSlider, Size, Tooltip } from '@blueprintjs/cor
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { IconNames } from '@blueprintjs/icons';
 import { useLocation } from 'react-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
     activePerformanceReportAtom,
     activePerformanceReportFolderNameAtom,
@@ -59,6 +59,10 @@ function Range() {
     const opIdsMap = useOpToPerfIdFiltered();
     const operationRange = useOperationListRange();
     const perfRange = usePerformanceRange();
+    const perfRows = perfData?.report;
+    // Built once per report: the slider asks for a label per tick and per handle on every render,
+    // and scanning the report for each label would read every row once per label.
+    const perfRowById = useMemo(() => getPerfRowById(perfRows), [perfRows]);
 
     const opMin = operationRange?.[0];
     const opMax = operationRange?.[1];
@@ -248,7 +252,7 @@ function Range() {
                                 labelStepSize={getStepSize(perfMax)}
                                 disabled={!isPerformanceRoute || !!comparisonReportList}
                                 labelRenderer={(id, options) =>
-                                    getPerformanceLabel(id, perfData?.report, options?.isHandleTooltip)
+                                    getPerformanceLabel(id, perfRowById, options?.isHandleTooltip)
                                 }
                                 handleHtmlProps={{
                                     start: { 'aria-label': 'Performance min range handle' },
@@ -364,8 +368,28 @@ const getOperationLabel = (selectedId: number, operations?: OperationDescription
         : selectedId.toString();
 };
 
-const getPerformanceLabel = (selectedId: number, data?: PerfTableRow[], isTooltip?: boolean): string => {
-    const matchingRow = data?.find((r) => parseInt(r.id, 10) === selectedId);
+// First row wins for a repeated id, and an id that does not parse labels nothing, as with a
+// scan for the first row whose parsed id equals the tick's.
+const getPerfRowById = (rows?: PerfTableRow[]): ReadonlyMap<number, PerfTableRow> => {
+    const perfRowById = new Map<number, PerfTableRow>();
+
+    for (const row of rows ?? []) {
+        const id = parseInt(row.id, 10);
+
+        if (!Number.isNaN(id) && !perfRowById.has(id)) {
+            perfRowById.set(id, row);
+        }
+    }
+
+    return perfRowById;
+};
+
+const getPerformanceLabel = (
+    selectedId: number,
+    perfRowById: ReadonlyMap<number, PerfTableRow>,
+    isTooltip?: boolean,
+): string => {
+    const matchingRow = perfRowById.get(selectedId);
 
     return matchingRow && isTooltip ? `${matchingRow.id}\xA0${matchingRow.raw_op_code}` : selectedId.toString();
 };

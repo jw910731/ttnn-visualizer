@@ -7,6 +7,15 @@ import { DeviceOperationMapping, DeviceOperationOrderCandidates } from '../model
 import { OpType } from '../definitions/Performance';
 
 /**
+ * What every failed match returns. One shared value rather than a fresh `[]` per
+ * attempt: the match is memoised on its inputs, which settle one query at a time
+ * while a report loads, and a new empty identity per attempt would invalidate
+ * everything derived from the match — the enriched perf rows among them — for a
+ * result that never changed. Frozen because every consumer shares it.
+ */
+export const NO_DEVICE_OPERATION_MATCHES: readonly DeviceOperationMapping[] = Object.freeze([]);
+
+/**
  * TODO: remove once memory and performance reports carry a shared run id (#1800)
  * @description Drop per-device duplicates of the same device operation, keeping
  * only keys seen exactly once per device. Some multi-device memory reports
@@ -48,17 +57,18 @@ export const collapseMultideviceOperations = (
 
 /**
  * @description Pair each device operation with the perf row at the same index,
- * or return [] if any position disagrees. Trailing perf rows are tolerated so a
- * report that also lists host ops still matches. Validation runs before any
- * allocation because callers try more than one candidate list, and the mappings
- * are copies so a rejected attempt leaves the caller's list untouched.
+ * or return `NO_DEVICE_OPERATION_MATCHES` if any position disagrees. Trailing
+ * perf rows are tolerated so a report that also lists host ops still matches.
+ * Validation runs before any allocation because callers try more than one
+ * candidate list, and the mappings are copies so a rejected attempt leaves the
+ * caller's list untouched.
  */
 const alignToPerfRows = (
     deviceOperations: DeviceOperationMapping[],
     perfRows: PerfTableRow[],
-): DeviceOperationMapping[] => {
+): readonly DeviceOperationMapping[] => {
     if (deviceOperations.length === 0 || deviceOperations.length > perfRows.length) {
-        return [];
+        return NO_DEVICE_OPERATION_MATCHES;
     }
 
     const isAligned = deviceOperations.every(
@@ -66,7 +76,7 @@ const alignToPerfRows = (
     );
 
     if (!isAligned) {
-        return [];
+        return NO_DEVICE_OPERATION_MATCHES;
     }
 
     return deviceOperations.map((deviceOperation, index) => ({ ...deviceOperation, perfData: perfRows[index] }));
@@ -87,9 +97,9 @@ const alignCollapsedToPerfRows = (
     deviceOperations: DeviceOperationMapping[],
     perfRows: PerfTableRow[],
     numDevices: number,
-): DeviceOperationMapping[] => {
+): readonly DeviceOperationMapping[] => {
     if (numDevices <= 1) {
-        return [];
+        return NO_DEVICE_OPERATION_MATCHES;
     }
 
     const collapsedOperations = collapseMultideviceOperations(deviceOperations, numDevices);
@@ -97,7 +107,7 @@ const alignCollapsedToPerfRows = (
     // A valid per-device list contributes every operation exactly once per
     // device. A smaller subset can prefix-match and falsely mark a report linked.
     if (collapsedOperations.length * numDevices !== deviceOperations.length) {
-        return [];
+        return NO_DEVICE_OPERATION_MATCHES;
     }
 
     return alignToPerfRows(collapsedOperations, perfRows);
@@ -106,7 +116,8 @@ const alignCollapsedToPerfRows = (
 /**
  * @description Match a memory report's device operations against a performance
  * report's rows, returning the mappings when the two sequences describe the same
- * run and [] when they don't (the report-link UNLINKED signal).
+ * run and `NO_DEVICE_OPERATION_MATCHES` when they don't (the report-link UNLINKED
+ * signal).
  *
  * The raw list is tried first because it is the shape most reports have; only
  * when that fails do we assume the memory report duplicated each op per device
@@ -116,7 +127,7 @@ export const matchDeviceOperationsToPerf = (
     deviceOperations: DeviceOperationMapping[],
     perfRows: PerfTableRow[],
     numDevices: number,
-): DeviceOperationMapping[] => {
+): readonly DeviceOperationMapping[] => {
     const alignableRows = alignableRowsOf(perfRows);
     const directMatch = alignToPerfRows(deviceOperations, alignableRows);
 
@@ -169,7 +180,7 @@ export const matchDeviceOperationOrdersToPerf = (
     { functionStartOperations, functionEndOperations }: DeviceOperationOrderCandidates,
     perfRows: PerfTableRow[],
     numDevices: number,
-): DeviceOperationMapping[] => {
+): readonly DeviceOperationMapping[] => {
     const alignableRows = alignableRowsOf(perfRows);
     const functionStartMatch = alignToPerfRows(functionStartOperations, alignableRows);
 
@@ -180,7 +191,7 @@ export const matchDeviceOperationOrdersToPerf = (
     // An interrupted capture can omit function-end events. Since alignment
     // tolerates trailing perf rows, only a complete reordering is safe to retry.
     if (!hasSameDeviceOperations(functionStartOperations, functionEndOperations)) {
-        return [];
+        return NO_DEVICE_OPERATION_MATCHES;
     }
 
     const functionEndMatch = alignToPerfRows(functionEndOperations, alignableRows);

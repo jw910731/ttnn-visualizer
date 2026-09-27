@@ -4,6 +4,7 @@
 
 import { isExtendedDeviceOperation } from '../../functions/filterOperations';
 import { toReadableShape } from '../../functions/formatting';
+import { processInputsOutputs } from '../../functions/processMemoryAllocations';
 import { type DeviceOperationNode, type Node, NodeType, type OperationDescription } from '../../model/APIData';
 import type { OpGraphDeviceSubgraph } from './opGraphTypes';
 
@@ -68,18 +69,28 @@ const tensorIdsOf = (nodes: Node[] | undefined): number[] => {
 
 /**
  * How many device operations the graph would draw for this operation. Cheap
- * enough to run for every operation on report load — it is a name test over the
- * frames `processedConnections` has already resolved — unlike the subgraph itself,
- * which waits for expansion.
+ * enough to run for every operation when the graph mounts, unlike the subgraph
+ * itself, which waits for expansion: it is a name test over the captured graph,
+ * without resolving any frame's tensors.
+ *
+ * `processInputsOutputs` keys the frames by node id and the last node written
+ * under an id wins, so the walk runs from the end and takes each id once — the
+ * same frames the subgraph is built from, without building them.
  */
 export function countDeviceOperations(operation: OperationDescription): number {
-    if (!Array.isArray(operation.processedConnections)) {
+    const graph = operation.device_operations;
+    if (!Array.isArray(graph)) {
         return 0;
     }
+    const seenNodeIds = new Set<number>();
     let count = 0;
-    for (const frame of operation.processedConnections) {
-        if (isDisplayedFrame(frame)) {
-            count += 1;
+    for (let index = graph.length - 1; index >= 0; index--) {
+        const node = graph[index];
+        if (!seenNodeIds.has(node.id)) {
+            seenNodeIds.add(node.id);
+            if (node.node_type === NodeType.function_start && isDisplayedFrame(node)) {
+                count += 1;
+            }
         }
     }
     return count;
@@ -245,14 +256,17 @@ function withoutShortcutEdges(edges: CompressedEdge[]): CompressedEdge[] {
  * The device operations an operation decomposes into, as a subgraph ready to
  * nest inside its node. Assembled on expansion rather than on report load: one
  * operation's frame stream runs to thousands of nodes, and deriving every
- * operation's subgraph up front would pay for the ones nobody opens.
+ * operation's subgraph up front would pay for the ones nobody opens. That holds
+ * for the frames too — resolved here rather than when the operations list loads,
+ * where every operation of a large report would carry tens of MiB of them for a
+ * view that may never open. The caller caches the result per operation.
  *
  * Returns `null` when nothing would be drawn, so the caller can leave the
  * operation collapsed rather than expanding it into an empty box.
  */
 export function buildDeviceOperationSubgraph(operation: OperationDescription): OpGraphDeviceSubgraph | null {
-    const frames = operation.processedConnections;
-    if (!Array.isArray(frames) || frames.length === 0) {
+    const frames = processInputsOutputs(operation.device_operations);
+    if (frames.length === 0) {
         return null;
     }
 

@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: © 2026 Tenstorrent AI ULC
 
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PerformanceReport from '../src/components/performance/PerfReport';
 import { TypedPerfTableRow } from '../src/model/PerfTable';
@@ -21,6 +22,8 @@ import { AtomProviderInitialValues } from './helpers/atomProvider';
 import { TestProviders } from './helpers/TestProviders';
 import testForPortal from './helpers/testForPortal';
 import { DEFAULT_MAX_CORES } from '../src/functions/getCoreCount';
+import usePerfReportFiltering from '../src/components/performance/usePerfReportFiltering';
+import { ColumnKeys } from '../src/definitions/PerfTable';
 
 vi.mock('../src/hooks/useAPI.tsx', () => ({
     useGetNPEManifest: vi.fn(),
@@ -28,6 +31,13 @@ vi.mock('../src/hooks/useAPI.tsx', () => ({
     useOperationsList: vi.fn(),
     usePerfMeta: vi.fn(),
 }));
+
+// Wrapped rather than replaced: the filtering is real, and a case can see what it was asked for.
+vi.mock('../src/components/performance/usePerfReportFiltering', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../src/components/performance/usePerfReportFiltering')>();
+
+    return { default: vi.fn(actual.default) };
+});
 
 const COMPARISON_REPORT = 'report-b';
 /** Accessible name Blueprint gives a MultiSelect tag's dismiss button. */
@@ -311,5 +321,84 @@ describe('PerformanceReport duration bucket tag', () => {
         expect(screen.getAllByText('Conv2d').length).toBeGreaterThan(0);
         expect(screen.getAllByText('Matmul').length).toBeGreaterThan(0);
         expect(screen.queryByText(formatDurationBucketRange(1, 10))).not.toBeInTheDocument();
+    });
+});
+
+const OP_CODE_FILTER_PLACEHOLDER = 'Filter by operation name';
+
+describe('PerformanceReport operation name search', () => {
+    it('filters the table by the typed operation name', async () => {
+        renderReport({ data: [row('Matmul', 1), row('Conv2d', 2)] });
+
+        fireEvent.change(screen.getByPlaceholderText(OP_CODE_FILTER_PLACEHOLDER), { target: { value: 'conv' } });
+
+        await waitFor(() => expect(screen.queryByText('Matmul')).not.toBeInTheDocument());
+        // Highlighting splits the matched text across elements, so the title names the cell
+        expect(screen.getAllByTitle('Conv2d').length).toBeGreaterThan(0);
+        expect(screen.getByPlaceholderText(OP_CODE_FILTER_PLACEHOLDER)).toHaveValue('conv');
+    });
+
+    // Filtering walks every row of the report, so doing it inside the keystroke's own render held
+    // the field's echo back until the table had caught up.
+    it('echoes the keystroke before filtering the rows by it', () => {
+        renderReport({ data: [row('Matmul', 1), row('Conv2d', 2)] });
+        vi.mocked(usePerfReportFiltering).mockClear();
+
+        fireEvent.change(screen.getByPlaceholderText(OP_CODE_FILTER_PLACEHOLDER), { target: { value: 'conv' } });
+
+        const opCodeFilters = vi
+            .mocked(usePerfReportFiltering)
+            .mock.calls.map(([{ filters }]) => filters?.[ColumnKeys.OpCode]);
+
+        expect(opCodeFilters[0]).toBe('');
+        expect(opCodeFilters.at(-1)).toBe('conv');
+    });
+});
+
+describe('PerformanceReport rendering', () => {
+    const data = [row('Matmul', 1)];
+    const comparisonData: TypedPerfTableRow[][] = [];
+    const stackedData: never[] = [];
+    const comparisonStackedData: never[][] = [];
+
+    function Parent() {
+        const [renderCount, setRenderCount] = useState(0);
+
+        return (
+            <>
+                <button
+                    type='button'
+                    onClick={() => setRenderCount((count) => count + 1)}
+                >
+                    re-render {renderCount}
+                </button>
+                <PerformanceReport
+                    data={data}
+                    comparisonData={comparisonData}
+                    stackedData={stackedData}
+                    comparisonStackedData={comparisonStackedData}
+                    maxCores={DEFAULT_MAX_CORES}
+                />
+            </>
+        );
+    }
+
+    // The route re-renders with unchanged props whenever the range slider re-sets bounds it
+    // already had, or a query's status changes; neither should re-render a report of tens of
+    // thousands of rows.
+    it('does not re-render when its parent re-renders with the same props', () => {
+        render(
+            <TestProviders>
+                <Parent />
+            </TestProviders>,
+        );
+        vi.mocked(usePerfReportFiltering).mockClear();
+
+        act(() => {
+            fireEvent.click(screen.getByRole('button', { name: /re-render/ }));
+        });
+
+        expect(screen.getByRole('button', { name: 're-render 1' })).toBeInTheDocument();
+        expect(usePerfReportFiltering).not.toHaveBeenCalled();
     });
 });

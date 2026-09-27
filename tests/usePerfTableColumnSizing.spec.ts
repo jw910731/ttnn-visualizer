@@ -254,3 +254,99 @@ describe('getPerfTableSizing', () => {
         });
     });
 });
+
+/** Rows whose `key` counts its reads, so a case can tell which columns were measured again. */
+const rowsCountingReadsOf = (key: keyof TypedPerfTableRow, rows: TypedPerfTableRow[]) => {
+    const reads = { count: 0 };
+
+    for (const row of rows) {
+        const value = row[key];
+
+        Object.defineProperty(row, key, {
+            enumerable: true,
+            get: () => {
+                reads.count += 1;
+                return value;
+            },
+        });
+    }
+
+    return { rows, reads };
+};
+
+// Toggling a column (high dispatch, the column picker) used to measure every column over every
+// row again. Each case counts reads of one column's field to see whether that column was re-measured.
+describe('getPerfTableSizing across calls', () => {
+    const mathFidelity = getColumn(ColumnKeys.MathFidelity);
+    const deviceTime = getColumn(ColumnKeys.DeviceTime);
+
+    it('measures a column once for a set of rows, however the other columns change', () => {
+        const { rows, reads } = rowsCountingReadsOf('math_fidelity', [
+            makeRow({ math_fidelity: 'HiFi4' }),
+            makeRow({ math_fidelity: 'LoFi' }),
+        ]);
+
+        const first = sizingFor({ rows, visibleColumns: [mathFidelity] });
+        const readsForOneMeasurement = reads.count;
+        const withColumnAdded = sizingFor({ rows, visibleColumns: [mathFidelity, HIGH_DISPATCH_COLUMN] });
+        const withColumnRemoved = sizingFor({ rows, visibleColumns: [mathFidelity] });
+
+        expect(reads.count).toBe(readsForOneMeasurement);
+        expect(withColumnAdded.columns.map(({ column }) => column)).toEqual([mathFidelity, HIGH_DISPATCH_COLUMN]);
+        expect(withColumnAdded.columns[0]).toEqual(first.columns[0]);
+        expect(withColumnRemoved).toEqual(first);
+    });
+
+    it('measures again for a new set of rows', () => {
+        const { rows, reads } = rowsCountingReadsOf('math_fidelity', [makeRow({ math_fidelity: 'HiFi4' })]);
+
+        sizingFor({ rows, visibleColumns: [mathFidelity] });
+        const readsForOneMeasurement = reads.count;
+        sizingFor({ rows: [...rows], visibleColumns: [mathFidelity] });
+
+        expect(reads.count).toBe(readsForOneMeasurement * 2);
+    });
+
+    it('re-measures the OP column alone once operations load', () => {
+        const { rows, reads } = rowsCountingReadsOf('op', [makeRow({ op: 12345, math_fidelity: 'HiFi4' })]);
+
+        expect(sizingFor({ rows, visibleColumns: [OP_COLUMN, mathFidelity] }).columns[0].widestText).toBe('12,345');
+        const readsBeforeLoad = reads.count;
+
+        expect(
+            sizingFor({ rows, visibleColumns: [OP_COLUMN, mathFidelity], hasOperations: true }).columns[0].widestText,
+        ).toBe('12345');
+        expect(reads.count).toBeGreaterThan(readsBeforeLoad);
+    });
+
+    it('re-measures the NPE column when the manifest changes', () => {
+        const rows = [makeRow({ global_call_count: 2049 })];
+
+        expect(sizingFor({ rows, visibleColumns: [NPE_COLUMN] }).columns[0].hasNpeLink).toBe(false);
+        expect(
+            sizingFor({
+                rows,
+                visibleColumns: [NPE_COLUMN],
+                npeFileByGlobalCallCount: new Map([[2049, 'npe.zst']]),
+            }).columns[0].hasNpeLink,
+        ).toBe(true);
+    });
+
+    // The comparison tab hands its datasets over in a list it rebuilds on every render.
+    it('re-measures comparison columns for new comparison rows, not for a rebuilt list of the same ones', () => {
+        const rows = [makeRow({ device_time: 1 })];
+        const { rows: comparisonDataset, reads } = rowsCountingReadsOf('device_time', [makeRow({ device_time: 4567 })]);
+
+        sizingFor({ rows, visibleColumns: [deviceTime], comparisonRows: [comparisonDataset] });
+        const readsForOneMeasurement = reads.count;
+        sizingFor({ rows, visibleColumns: [deviceTime], comparisonRows: [comparisonDataset] });
+
+        expect(reads.count).toBe(readsForOneMeasurement);
+
+        const widerDataset = [makeRow({ device_time: 1234567 })];
+
+        expect(
+            sizingFor({ rows, visibleColumns: [deviceTime], comparisonRows: [widerDataset] }).columns[0].widestText,
+        ).toBe(formatCellText(1234567, deviceTime));
+    });
+});

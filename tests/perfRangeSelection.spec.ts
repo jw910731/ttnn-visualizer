@@ -10,7 +10,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { clampSelectionToRange } from '../src/functions/perfRangeSelection';
+import { clampSelectionToRange, getPerformanceRange } from '../src/functions/perfRangeSelection';
+import { PerfTableRow } from '../src/model/PerfTable';
 
 const RANGE_MIN = 100;
 const RANGE_MAX = 200;
@@ -49,5 +50,33 @@ describe('clampSelectionToRange', () => {
 
     it('holds a single-value track still', () => {
         expect(clampSelectionToRange(5, 900, RANGE_MIN, RANGE_MIN)).toEqual([RANGE_MIN, RANGE_MIN]);
+    });
+});
+
+const rowsWithIds = (ids: string[]): PerfTableRow[] => ids.map((id) => ({ id }) as PerfTableRow);
+
+// Past the argument count a single call accepts, where spreading the ids into
+// `Math.min`/`Math.max` threw a `RangeError` instead of returning a range.
+const ROW_COUNT_PAST_ARGUMENT_LIMIT = 200_000;
+
+describe('getPerformanceRange', () => {
+    it('has no range without rows', () => {
+        expect(getPerformanceRange(undefined)).toBeNull();
+        expect(getPerformanceRange([])).toBeNull();
+    });
+
+    it('spans the lowest and highest id whatever order the rows are in', () => {
+        expect(getPerformanceRange(rowsWithIds(['7', '2', '41', '9']))).toEqual([2, 41]);
+    });
+
+    it('spans a report too large to spread into one call', () => {
+        const ids = Array.from({ length: ROW_COUNT_PAST_ARGUMENT_LIMIT }, (_, index) => String(index + 2));
+
+        expect(getPerformanceRange(rowsWithIds(ids))).toEqual([2, ROW_COUNT_PAST_ARGUMENT_LIMIT + 1]);
+    });
+
+    it('skips an id that does not parse rather than returning NaN ends', () => {
+        expect(getPerformanceRange(rowsWithIds(['', '5', 'x', '3']))).toEqual([3, 5]);
+        expect(getPerformanceRange(rowsWithIds(['x']))).toBeNull();
     });
 });

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: © 2026 Tenstorrent AI ULC
 
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { useAtom, useSetAtom } from 'jotai';
 import { useState } from 'react';
 import { Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -24,6 +24,7 @@ import {
     durationBucketFilterListAtom,
     layoutFilterListAtom,
     mathFilterListAtom,
+    perfSelectedTabAtom,
     rawOpCodeFilterListAtom,
     selectedPerfRowIdAtom,
     selectedPerformanceRangeAtom,
@@ -31,12 +32,15 @@ import {
 import { BufferType } from '../src/model/BufferType';
 import { DeviceOperationLayoutTypes } from '../src/model/APIData';
 import { L1PressureStatus } from '../src/model/L1Pressure';
-import { PerfTableRow } from '../src/model/PerfTable';
+import { PerfTableRow, TypedPerfTableRow } from '../src/model/PerfTable';
 import { PerfHeuristicFlag } from '../src/definitions/PerfHeuristics';
-import { OpType } from '../src/definitions/Performance';
+import { OpType, PerfTabIds } from '../src/definitions/Performance';
+import { Marker } from '../src/definitions/PerfTable';
+import { enrichRowData } from '../src/functions/enrichPerfRowData';
 import { TestProviders } from './helpers/TestProviders';
 
 const perfReportProps = vi.hoisted(() => vi.fn());
+const chartsTabProps = vi.hoisted(() => vi.fn());
 
 vi.mock('../src/hooks/useAPI.tsx', () => ({
     useL1PressureByOperation: vi.fn(),
@@ -63,6 +67,21 @@ vi.mock('../src/components/performance/PerfReport', () => ({
         return <div data-testid='perf-report-stub' />;
     },
 }));
+
+// Stubbed like the report shell: the op-code selection cases read what the route hands the charts.
+vi.mock('../src/components/performance/PerformanceChartsTab', () => ({
+    default: (props: Record<string, unknown>) => {
+        chartsTabProps(props);
+        return <div data-testid='charts-tab-stub' />;
+    },
+}));
+
+// Wrapped rather than replaced, so a case can see which rows the route enriched.
+vi.mock('../src/functions/enrichPerfRowData', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../src/functions/enrichPerfRowData')>();
+
+    return { ...actual, enrichRowData: vi.fn(actual.enrichRowData) };
+});
 
 const DRAM_PERF_ROW = {
     id: '1',
@@ -107,6 +126,8 @@ afterEach(cleanup);
 
 beforeEach(() => {
     perfReportProps.mockClear();
+    chartsTabProps.mockClear();
+    vi.mocked(enrichRowData).mockClear();
     // Loading state: the route keeps its shell mounted (no full-page spinner) and the
     // report shell is stubbed, so only the route's active-report effects run here.
     (usePerformanceReport as Mock).mockReturnValue({ data: undefined, isLoading: true, error: null });
@@ -468,5 +489,220 @@ describe('Performance route', () => {
         fireEvent.click(screen.getByTestId('remount-performance'));
 
         expect(screen.getByTestId('selected-row-probe')).toHaveTextContent(String(SELECTED_ROW_ID));
+    });
+});
+
+const reportWith = (opCodes: string[]) => ({
+    report: opCodes.map((opCode, index) => ({
+        ...DRAM_PERF_ROW,
+        id: String(index + 1),
+        op_code: opCode,
+        raw_op_code: opCode,
+    })),
+    stacked_report: [],
+    signposts: [],
+});
+
+const mockReport = (opCodes: string[]) => {
+    const data = reportWith(opCodes);
+
+    (usePerformanceReport as Mock).mockReturnValue({ data, isLoading: false, error: null });
+    (usePerformanceRange as Mock).mockReturnValue([1, opCodes.length]);
+
+    return data;
+};
+
+interface ChartsTabProps {
+    selectedOpCodes: Marker[];
+    opCodeOptions: Marker[];
+    filteredPerfData: TypedPerfTableRow[];
+    updateOpCodes: (opCodes: Marker[]) => void;
+}
+
+const chartsTabCalls = () => chartsTabProps.mock.calls.map(([props]) => props as ChartsTabProps);
+const lastChartsTab = () => chartsTabCalls().at(-1) as ChartsTabProps;
+const opCodesOf = (markers: { opCode?: string; raw_op_code?: string }[]) =>
+    markers.map((marker) => marker.opCode ?? marker.raw_op_code);
+
+const renderCharts = () =>
+    render(
+        <TestProviders
+            initialAtomValues={[
+                [activePerformanceReportAtom, REPORT_A],
+                [perfSelectedTabAtom, PerfTabIds.CHARTS],
+            ]}
+        >
+            <Performance />
+        </TestProviders>,
+    );
+
+const selectOpCodes = (opCodes: string[]) =>
+    act(() => {
+        const { opCodeOptions, updateOpCodes } = lastChartsTab();
+
+        updateOpCodes(opCodeOptions.filter((option) => opCodes.includes(option.opCode)));
+    });
+
+describe('Performance route chart op-code selection', () => {
+    // It used to start empty and be filled in by an effect after the first commit, so every
+    // report paid for a second render of the whole route before the charts settled.
+    it('selects every op code from the first render', () => {
+        mockReport(['Matmul', 'Conv2d']);
+
+        renderCharts();
+
+        expect(chartsTabCalls().length).toBeGreaterThan(0);
+
+        for (const props of chartsTabCalls()) {
+            expect(opCodesOf(props.selectedOpCodes)).toEqual(['Matmul', 'Conv2d']);
+            expect(opCodesOf(props.filteredPerfData)).toEqual(['Matmul', 'Conv2d']);
+        }
+    });
+
+    it('keeps the user’s selection while the options stay the same', () => {
+        mockReport(['Matmul', 'Conv2d']);
+        const { rerender } = renderCharts();
+
+        selectOpCodes(['Matmul']);
+        expect(opCodesOf(lastChartsTab().selectedOpCodes)).toEqual(['Matmul']);
+        expect(opCodesOf(lastChartsTab().filteredPerfData)).toEqual(['Matmul']);
+
+        // A new response carrying the same op codes, as a view toggle refetches
+        mockReport(['Matmul', 'Conv2d']);
+        rerender(
+            <TestProviders>
+                <Performance />
+            </TestProviders>,
+        );
+
+        expect(opCodesOf(lastChartsTab().selectedOpCodes)).toEqual(['Matmul']);
+        expect(opCodesOf(lastChartsTab().filteredPerfData)).toEqual(['Matmul']);
+    });
+
+    it('starts from every op code again when the options change', () => {
+        mockReport(['Matmul', 'Conv2d']);
+        const { rerender } = renderCharts();
+
+        selectOpCodes(['Matmul']);
+        mockReport(['Matmul', 'Conv2d', 'Softmax']);
+        rerender(
+            <TestProviders>
+                <Performance />
+            </TestProviders>,
+        );
+
+        expect(opCodesOf(lastChartsTab().selectedOpCodes)).toEqual(['Matmul', 'Conv2d', 'Softmax']);
+        expect(opCodesOf(lastChartsTab().filteredPerfData)).toEqual(['Matmul', 'Conv2d', 'Softmax']);
+    });
+
+    it('does not revive a selection when the options it was made from come back', () => {
+        mockReport(['Matmul', 'Conv2d']);
+        const { rerender } = renderCharts();
+
+        selectOpCodes(['Matmul']);
+        mockReport(['Softmax']);
+        rerender(
+            <TestProviders>
+                <Performance />
+            </TestProviders>,
+        );
+        mockReport(['Matmul', 'Conv2d']);
+        rerender(
+            <TestProviders>
+                <Performance />
+            </TestProviders>,
+        );
+
+        expect(opCodesOf(lastChartsTab().selectedOpCodes)).toEqual(['Matmul', 'Conv2d']);
+    });
+
+    it('charts no rows once the user clears every op code', () => {
+        mockReport(['Matmul', 'Conv2d']);
+        renderCharts();
+
+        selectOpCodes([]);
+
+        expect(lastChartsTab().selectedOpCodes).toEqual([]);
+        expect(lastChartsTab().filteredPerfData).toEqual([]);
+    });
+});
+
+function RangeController({ range }: { range: [number, number] }) {
+    const setRange = useSetAtom(selectedPerformanceRangeAtom);
+
+    return (
+        <button
+            type='button'
+            data-testid='set-range'
+            // A new tuple on every click, as the slider's clamp produces
+            onClick={() => setRange([range[0], range[1]])}
+        >
+            range
+        </button>
+    );
+}
+
+describe('Performance route table range', () => {
+    it('enriches the report’s own rows when the range spans the whole report', () => {
+        const { report } = mockReport(['Matmul', 'Conv2d', 'Softmax']);
+
+        render(
+            <TestProviders
+                initialAtomValues={[
+                    [activePerformanceReportAtom, REPORT_A],
+                    [selectedPerformanceRangeAtom, [1, 3]],
+                ]}
+            >
+                <Performance />
+            </TestProviders>,
+        );
+
+        expect(vi.mocked(enrichRowData).mock.calls.at(-1)?.[0]).toBe(report);
+    });
+
+    it('filters to the selected rows when the range covers part of the report', () => {
+        mockReport(['Matmul', 'Conv2d', 'Softmax']);
+
+        render(
+            <TestProviders
+                initialAtomValues={[
+                    [activePerformanceReportAtom, REPORT_A],
+                    [selectedPerformanceRangeAtom, [2, 3]],
+                ]}
+            >
+                <Performance />
+            </TestProviders>,
+        );
+
+        expect(opCodesOf(perfReportProps.mock.calls.at(-1)?.[0]?.data)).toEqual(['Conv2d', 'Softmax']);
+    });
+
+    // The slider re-sets its atom to the bounds it already holds as it syncs, and each is a
+    // new tuple. Followed by identity, every one re-enriched the report and re-rendered the table.
+    it.each([
+        ['the whole report', [1, 3] as [number, number]],
+        ['part of the report', [2, 3] as [number, number]],
+    ])('keeps the rows it hands the table when %s is selected again', (_label, range) => {
+        mockReport(['Matmul', 'Conv2d', 'Softmax']);
+
+        render(
+            <TestProviders
+                initialAtomValues={[
+                    [activePerformanceReportAtom, REPORT_A],
+                    [selectedPerformanceRangeAtom, range],
+                ]}
+            >
+                <Performance />
+                <RangeController range={range} />
+            </TestProviders>,
+        );
+
+        const rowsBefore = perfReportProps.mock.calls.at(-1)?.[0]?.data;
+        const enrichmentsBefore = vi.mocked(enrichRowData).mock.calls.length;
+
+        fireEvent.click(screen.getByTestId('set-range'));
+
+        expect(perfReportProps.mock.calls.at(-1)?.[0]?.data).toBe(rowsBefore);
+        expect(vi.mocked(enrichRowData).mock.calls.length).toBe(enrichmentsBefore);
     });
 });
