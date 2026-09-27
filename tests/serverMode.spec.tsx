@@ -33,6 +33,7 @@ vi.mock('../src/hooks/useAPI.tsx', () => ({
     useOpToPerfIdFiltered: () => [],
     useL1PressureByOperation: () => ({ status: 'unavailable', data: null }),
     useOperationsList: () => ({ data: [] }),
+    useOperationsSummary: () => ({ data: [] }),
     useReportFolderList: () => ({ data: mockProfilerFolderList }),
     useGetNPEManifest: () => ({ data: null }),
     useReportMetadata: () => ({ data: undefined, error: undefined }),

@@ -80,7 +80,8 @@ const unmappedRow = makeRow({ id: 2, raw_op_code: 'Reshape', op: undefined });
 afterEach(cleanup);
 
 beforeEach(() => {
-    (useOperationsList as Mock).mockReturnValue({ data: [matmulOp] });
+    vi.clearAllMocks();
+    (useOperationsList as Mock).mockReturnValue({ data: [matmulOp], isLoading: false, error: null });
 });
 
 describe('PerfTensorDrawer', () => {
@@ -116,5 +117,49 @@ describe('PerfTensorDrawer', () => {
         expect(screen.getByText('No linked profiler operation for this row.')).toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Memory Details' })).not.toBeInTheDocument();
         expect(screen.queryByRole('link', { name: /matmul_op/i })).not.toBeInTheDocument();
+    });
+
+    // The drawer is mounted whenever the table can show it, and the full list is every
+    // operation's graph and tensors; subscribing while closed fetched it for the whole route.
+    it('does not read the operations list while no row is selected', () => {
+        render(
+            <TestProviders initialAtomValues={[[selectedPerfRowIdAtom, null]]}>
+                <PerfTensorDrawer rows={[mappedRow, unmappedRow]} />
+            </TestProviders>,
+        );
+
+        expect(useOperationsList).not.toHaveBeenCalled();
+    });
+
+    it('shows a spinner rather than the empty state while the operations list loads', () => {
+        (useOperationsList as Mock).mockReturnValue({ data: undefined, isLoading: true, error: null });
+
+        render(
+            <TestProviders initialAtomValues={[[selectedPerfRowIdAtom, mappedRow.id]]}>
+                <PerfTensorDrawer rows={[mappedRow]} />
+            </TestProviders>,
+        );
+
+        const drawer = screen.getByTestId(TEST_IDS.PERF_TENSOR_DRAWER);
+
+        expect(drawer.querySelector('.loading-spinner')).toBeInTheDocument();
+        expect(screen.queryByText('No linked profiler operation for this row.')).not.toBeInTheDocument();
+    });
+
+    it('says why when the operations list failed to load', () => {
+        (useOperationsList as Mock).mockReturnValue({
+            data: undefined,
+            isLoading: false,
+            error: new Error('Request failed with status code 500'),
+        });
+
+        render(
+            <TestProviders initialAtomValues={[[selectedPerfRowIdAtom, mappedRow.id]]}>
+                <PerfTensorDrawer rows={[mappedRow]} />
+            </TestProviders>,
+        );
+
+        expect(screen.getByText('Request failed with status code 500')).toBeInTheDocument();
+        expect(screen.queryByText('No linked profiler operation for this row.')).not.toBeInTheDocument();
     });
 });

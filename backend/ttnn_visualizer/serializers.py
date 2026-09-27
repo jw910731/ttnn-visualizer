@@ -3,13 +3,31 @@
 # SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
 
 import dataclasses
+import json
+import logging
 from collections import defaultdict
-from typing import DefaultDict, List
+from typing import Any, DefaultDict, Dict, Iterable, List, Tuple, Union
 
 import orjson
-from ttnn_visualizer.models import BufferType, Operation, TensorComparisonRecord
+from ttnn_visualizer.models import (
+    BufferType,
+    DeviceOperation,
+    Operation,
+    StackTrace,
+    TensorComparisonRecord,
+)
+from ttnn_visualizer.operation_file_identifier import operation_file_identifier
+
+logger = logging.getLogger(__name__)
 
 _EMPTY_DEVICE_OPERATIONS = orjson.Fragment(b"[]")
+
+_FUNCTION_START = "function_start"
+_FUNCTION_END = "function_end"
+
+# A device-operation name as the summary writes it: the string, or -- for one holding
+# a lone surrogate, which orjson will not write -- that string already written as JSON.
+_DeviceOperationName = Union[str, orjson.Fragment]
 
 
 def _captured_graph_fragment(captured_graph):
@@ -117,6 +135,136 @@ def serialize_operations(
                 "inputs": inputs,
                 "outputs": outputs,
                 "error": error_data,
+            }
+        )
+    return results
+
+
+def _device_operation_names(
+    captured_graph: str,
+) -> Tuple[List[_DeviceOperationName], List[_DeviceOperationName]]:
+    """
+    ``params.name`` of every ``function_start`` and every ``function_end`` node,
+    each in graph order. Raises ``ValueError`` for a graph that is not JSON, and
+    ``RecursionError`` for one nested past the interpreter's recursion limit --
+    which ``JSON.parse`` would read, but TTNN's graphs nest three levels deep.
+
+    Unfiltered on purpose: which names are device operations is
+    ``isDeviceOperation``'s decision (``src/functions/filterOperations.ts``), and
+    the client applies it to these lists as it does to the full graph, so the
+    rule has one home. Only names that are not strings are dropped, since the
+    client could do nothing with them but fail.
+    """
+    try:
+        nodes = orjson.loads(captured_graph)
+        read_by_stdlib = False
+    except orjson.JSONDecodeError:
+        # The client read these graphs itself, with `JSON.parse`, when it loaded the
+        # full list, and that accepts what orjson refuses: a lone-surrogate escape
+        # (`"\udc80"`) and a number beyond a double's range (`1e400`). The stdlib
+        # parser takes both, so such a graph keeps the names the client used to
+        # find in it. Only a graph orjson refused pays for the slower parse.
+        nodes = json.loads(captured_graph)
+        read_by_stdlib = True
+
+    start_names: List[_DeviceOperationName] = []
+    end_names: List[_DeviceOperationName] = []
+    if not isinstance(nodes, list):
+        return start_names, end_names
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        params = node.get("params")
+        name = params.get("name") if isinstance(params, dict) else None
+        if not isinstance(name, str):
+            continue
+        written_name = _json_writable_name(name) if read_by_stdlib else name
+        node_type = node.get("node_type")
+        if node_type == _FUNCTION_START:
+            start_names.append(written_name)
+        elif node_type == _FUNCTION_END:
+            end_names.append(written_name)
+    return start_names, end_names
+
+
+def _json_writable_name(name: str) -> _DeviceOperationName:
+    # orjson will not write a lone surrogate, and only the stdlib parser lets one
+    # through. The stdlib writer escapes it (`"\udc80"`), which `JSON.parse` reads
+    # back as the same string the client found in the full graph.
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return orjson.Fragment(json.dumps(name))
+    return name
+
+
+def _value_for_operation(values_by_key, operation, default=None):
+    # The same (id, rank)-then-rank-0 lookup `serialize_operations` makes, so a
+    # table without a `rank` column still pairs with a ranked `operations`.
+    key = (operation.operation_id, operation.rank)
+    if key in values_by_key:
+        return values_by_key[key]
+    return values_by_key.get((operation.operation_id, 0), default)
+
+
+def serialize_operations_summary(
+    operations: Iterable[Operation],
+    device_operations: Iterable[DeviceOperation],
+    stack_traces: Iterable[StackTrace],
+) -> List[Dict[str, Any]]:
+    """
+    The fields of ``/api/operations`` that the performance route, the range
+    slider and the report link read, one entry per operation in ``operations``
+    order.
+
+    ``device_operations`` and ``stack_traces`` are consumed once each and may be
+    streams: every graph and trace is reduced as it arrives, so neither column
+    is ever resident in full.
+    """
+    names_by_key: Dict[
+        Tuple[int, int],
+        Tuple[List[_DeviceOperationName], List[_DeviceOperationName]],
+    ] = {}
+    unreadable_graph_count = 0
+    for device_operation in device_operations:
+        try:
+            names_by_key[(device_operation.operation_id, device_operation.rank)] = (
+                _device_operation_names(device_operation.captured_graph)
+            )
+        # Both parsers raise a `ValueError` for text that is not JSON; the stdlib
+        # one raises `RecursionError` for nesting past the interpreter's limit.
+        except (ValueError, RecursionError):
+            unreadable_graph_count += 1
+
+    if unreadable_graph_count:
+        # Once per request rather than per graph: a damaged capture can hold
+        # thousands, and every one has the same consequence.
+        logger.warning(
+            "%d captured graphs did not parse as JSON; their operations list no "
+            "device operations",
+            unreadable_graph_count,
+        )
+
+    identifiers_by_key = {
+        (stack_trace.operation_id, stack_trace.rank): operation_file_identifier(
+            stack_trace.stack_trace
+        )
+        for stack_trace in stack_traces
+    }
+
+    results = []
+    for operation in operations:
+        names = _value_for_operation(names_by_key, operation)
+        start_names, end_names = names if names is not None else ([], [])
+        results.append(
+            {
+                "id": operation.operation_id,
+                "name": operation.name,
+                "operation_file_identifier": _value_for_operation(
+                    identifiers_by_key, operation, ""
+                ),
+                "device_operation_start_names": start_names,
+                "device_operation_end_names": end_names,
             }
         )
     return results

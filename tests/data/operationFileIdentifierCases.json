@@ -1,0 +1,197 @@
+[
+    {
+        "description": "a traceback, innermost frame first",
+        "stackTrace": "File \"/home/user/tt-metal/models/demos/llama/tt/attention.py\", line 214, in forward\n    attn = ttnn.matmul(q, k)\n  File \"/home/user/tt-metal/models/demos/llama/tt/model.py\", line 88, in __call__\n    return self.attention(x)",
+        "expected": "attention.py:214"
+    },
+    {
+        "description": "a frame indented as Python prints it",
+        "stackTrace": "  File \"/usr/lib/python3.10/runpy.py\", line 196, in _run_module_as_main\n    return _run_code(code, main_globals, None,",
+        "expected": "runpy.py:196"
+    },
+    {
+        "description": "a file with no directory",
+        "stackTrace": "File \"model.py\", line 7, in <module>",
+        "expected": "model.py:7"
+    },
+    {
+        "description": "a frame without a line number, skipped for the next",
+        "stackTrace": "File \"/a/first.py\", in forward\n  File \"/b/second.py\", line 5, in run",
+        "expected": "second.py:5"
+    },
+    {
+        "description": "a Windows path, whose backslashes are not separators",
+        "stackTrace": "File \"C:\\models\\model.py\", line 3, in forward",
+        "expected": "C:\\models\\model.py:3"
+    },
+    {
+        "description": "whitespace, newlines included, around the separators",
+        "stackTrace": "File\n\"/srv/app/main.py\",\n   line   42, in main",
+        "expected": "main.py:42"
+    },
+    {
+        "description": "a slash later on the frame line",
+        "stackTrace": "File \"/a/b/c.py\", line 10, in f/g\n  File \"/x/y.py\", line 20, in h",
+        "expected": "c.py:10"
+    },
+    {
+        "description": "no frame at all",
+        "stackTrace": "Traceback unavailable for this operation",
+        "expected": ""
+    },
+    {
+        "description": "an empty trace",
+        "stackTrace": "",
+        "expected": ""
+    },
+    {
+        "description": "a line number that is not ASCII digits",
+        "stackTrace": "File \"/a/b.py\", line \u0663\u0664, in f",
+        "expected": ""
+    },
+    {
+        "description": "a byte-order mark, which JavaScript counts as whitespace",
+        "stackTrace": "File\ufeff\"/a/b.py\",\ufeffline 4, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "a no-break space, which both count as whitespace",
+        "stackTrace": "File\u00a0\"/a/b.py\",\u00a0line 4, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "an information separator, which only Python counts as whitespace",
+        "stackTrace": "File\u001c\"/a/b.py\", line 4, in f",
+        "expected": ""
+    },
+    {
+        "description": "a carriage return inside the path, where JavaScript's `.` stops",
+        "stackTrace": "File \"/a/b.py\r/c.py\", line 2, in f",
+        "expected": ""
+    },
+    {
+        "description": "a line separator inside the path, where JavaScript's `.` stops",
+        "stackTrace": "File \"/a/b.py\u2028/c.py\", line 2, in f",
+        "expected": ""
+    },
+    {
+        "description": "a next-line character inside the path, which JavaScript's `.` crosses",
+        "stackTrace": "File \"/a/b.py\u0085/c.py\", line 2, in f",
+        "expected": "c.py:2"
+    },
+    {
+        "description": "a non-BMP character in the file name",
+        "stackTrace": "File \"/a/\ud83d\ude00.py\", line 9, in f",
+        "expected": "\ud83d\ude00.py:9"
+    },
+    {
+        "description": "a vertical tab, which JavaScript counts as whitespace",
+        "stackTrace": "File\u000b\"/a/b.py\",\u000bline\u000b4, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "a form feed, which JavaScript counts as whitespace",
+        "stackTrace": "File\f\"/a/b.py\",\fline\f4, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "an ogham space mark, which JavaScript counts as whitespace",
+        "stackTrace": "File\u1680\"/a/b.py\",\u1680line\u16804, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "U+2000, a Unicode space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u2000\"/a/b.py\",\u2000line\u20004, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "U+2001, a Unicode space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u2001\"/a/b.py\",\u2001line\u20014, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "U+2002, a Unicode space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u2002\"/a/b.py\",\u2002line\u20024, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "U+2003, a Unicode space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u2003\"/a/b.py\",\u2003line\u20034, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "U+2004, a Unicode space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u2004\"/a/b.py\",\u2004line\u20044, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "U+2005, a Unicode space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u2005\"/a/b.py\",\u2005line\u20054, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "U+2006, a Unicode space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u2006\"/a/b.py\",\u2006line\u20064, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "U+2007, a Unicode space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u2007\"/a/b.py\",\u2007line\u20074, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "U+2008, a Unicode space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u2008\"/a/b.py\",\u2008line\u20084, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "U+2009, a Unicode space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u2009\"/a/b.py\",\u2009line\u20094, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "U+200A, a Unicode space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u200a\"/a/b.py\",\u200aline\u200a4, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "a narrow no-break space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u202f\"/a/b.py\",\u202fline\u202f4, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "a medium mathematical space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u205f\"/a/b.py\",\u205fline\u205f4, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "an ideographic space, which JavaScript counts as whitespace",
+        "stackTrace": "File\u3000\"/a/b.py\",\u3000line\u30004, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "a paragraph separator, which JavaScript counts as whitespace",
+        "stackTrace": "File\u2029\"/a/b.py\",\u2029line\u20294, in f",
+        "expected": "b.py:4"
+    },
+    {
+        "description": "a Mongolian vowel separator, which JavaScript stopped counting as whitespace",
+        "stackTrace": "File\u180e\"/a/b.py\", line 4, in f",
+        "expected": ""
+    },
+    {
+        "description": "a zero-width space, which JavaScript does not count as whitespace",
+        "stackTrace": "File\u200b\"/a/b.py\", line 4, in f",
+        "expected": ""
+    },
+    {
+        "description": "a unit separator, which only Python counts as whitespace",
+        "stackTrace": "File\u001f\"/a/b.py\", line 4, in f",
+        "expected": ""
+    },
+    {
+        "description": "a paragraph separator inside the path, where JavaScript's `.` stops",
+        "stackTrace": "File \"/a/b.py\u2029/c.py\", line 2, in f",
+        "expected": ""
+    }
+]

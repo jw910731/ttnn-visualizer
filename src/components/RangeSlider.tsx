@@ -24,17 +24,17 @@ import {
     useGetDeviceOperationListPerf,
     useOpToPerfIdFiltered,
     useOperationListRange,
-    useOperationsList,
+    useOperationsSummary,
     usePerformanceRange,
     usePerformanceReport,
 } from '../hooks/useAPI';
-import { OperationDescription } from '../model/APIData';
 import { PerfTableRow } from '../model/PerfTable';
 import LoadingSpinner from './LoadingSpinner';
 import createToastNotification from '../functions/createToastNotification';
 import { ToastType } from '../definitions/ToastType';
 import getResponseError from '../functions/getResponseError';
 import { clampSelectionToRange } from '../functions/perfRangeSelection';
+import { OperationsById, getOperationsById } from '../functions/perfFunctions';
 
 const RANGE_STEP = 25;
 
@@ -50,7 +50,7 @@ function Range() {
     const [isUserOpChange, setIsUserOpChange] = useState(false);
     const [isUserPerfChange, setIsUserPerfChange] = useState(false);
 
-    const { data: operations } = useOperationsList();
+    const { data: operations } = useOperationsSummary();
     const { data: perfData, error: perfDataError } = usePerformanceReport(activeReportFolderName);
     const { error: clusterError } = useGetClusterDescription();
     const location = useLocation();
@@ -61,8 +61,9 @@ function Range() {
     const perfRange = usePerformanceRange();
     const perfRows = perfData?.report;
     // Built once per report: the slider asks for a label per tick and per handle on every render,
-    // and scanning the report for each label would read every row once per label.
+    // and scanning a report for each label would read every row once per label.
     const perfRowById = useMemo(() => getPerfRowById(perfRows), [perfRows]);
+    const operationsById = useMemo(() => getOperationsById(operations ?? []), [operations]);
 
     const opMin = operationRange?.[0];
     const opMax = operationRange?.[1];
@@ -330,7 +331,9 @@ function Range() {
                             max={opMax}
                             labelStepSize={getStepSize(opMax)}
                             disabled={shouldDisableOpRange}
-                            labelRenderer={(id, options) => getOperationLabel(id, operations, options?.isHandleTooltip)}
+                            labelRenderer={(id, options) =>
+                                getOperationLabel(id, operationsById, options?.isHandleTooltip)
+                            }
                             handleHtmlProps={{
                                 start: { 'aria-label': 'Operation min range handle' },
                                 end: { 'aria-label': 'Operation max range handle' },
@@ -360,8 +363,8 @@ function Range() {
 
 const getStepSize = (max: number) => (RANGE_STEP > max ? 1 : Math.ceil(max / RANGE_STEP));
 
-const getOperationLabel = (selectedId: number, operations?: OperationDescription[], isTooltip?: boolean): string => {
-    const matchingOperation = operations?.find((operation) => operation.id === selectedId);
+const getOperationLabel = (selectedId: number, operationsById: OperationsById, isTooltip?: boolean): string => {
+    const matchingOperation = operationsById.get(selectedId);
 
     return matchingOperation && isTooltip
         ? `${matchingOperation.id}\xA0${matchingOperation.name}`

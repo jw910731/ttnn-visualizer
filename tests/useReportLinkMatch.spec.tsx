@@ -19,7 +19,12 @@ const apiState = vi.hoisted(() => ({
 
 vi.mock('../src/hooks/useAPI', () => ({
     useGetDeviceOperationListPerf: () => apiState.matchedOperations,
-    useOperationsList: () => apiState.operations,
+    useOperationsSummary: () => apiState.operations,
+    // The badge is mounted on every route, and the full list is hundreds of MB on a large
+    // report; the summary is what the match is built from, so it is what settles the badge.
+    useOperationsList: () => {
+        throw new Error('useReportLinkMatch must read useOperationsSummary, not the full operations list');
+    },
     useDevices: () => apiState.devices,
     useLinkedPerformanceReport: () => apiState.performance,
     // Link status is a property of the reports, not of how the performance tab is
@@ -121,6 +126,16 @@ describe('useReportLinkMatch', () => {
         });
 
         expect(result.current).toBe(ReportLinkMatchResult.PENDING);
+    });
+
+    it('returns UNAVAILABLE when the operations summary failed to load', () => {
+        apiState.operations = { isFetched: true, isFetching: false, isError: true };
+
+        const { result } = renderHook(() => useReportLinkMatch(), {
+            wrapper: wrapperWithReports(),
+        });
+
+        expect(result.current).toBe(ReportLinkMatchResult.UNAVAILABLE);
     });
 
     it('returns UNAVAILABLE when settled with a query error', () => {

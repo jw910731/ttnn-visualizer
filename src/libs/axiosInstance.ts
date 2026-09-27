@@ -76,10 +76,13 @@ interface RetryConfig extends AxiosRequestConfig {
 
 const MAX_RETRIES = 3;
 
+// Both list every operation in the report, so both are large enough to arrive cut short.
+const OPERATIONS_ENDPOINTS: readonly Endpoints[] = [Endpoints.OPERATIONS_LIST, Endpoints.OPERATIONS_SUMMARY];
+
 // Response interceptor to validate data integrity and auto-retry for large JSON responses
 axiosInstance.interceptors.response.use(
     async (response) => {
-        const isOperationsEndpoint = response.config.url?.endsWith(Endpoints.OPERATIONS_LIST);
+        const isOperationsEndpoint = OPERATIONS_ENDPOINTS.some((endpoint) => response.config.url?.endsWith(endpoint));
 
         if (response.config.method === 'get' && isOperationsEndpoint && !Array.isArray(response.data)) {
             const retryCount = (response.config as RetryConfig).retryCount || 0;

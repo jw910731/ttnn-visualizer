@@ -12,10 +12,11 @@ import {
     useGetDeviceOperationListPerf,
     useOpToPerfIdFiltered,
     useOperationListRange,
-    useOperationsList,
+    useOperationsSummary,
     usePerformanceRange,
     usePerformanceReport,
 } from '../src/hooks/useAPI';
+import { OperationSummary } from '../src/model/APIData';
 import { PerfTableRow } from '../src/model/PerfTable';
 import { selectedPerformanceRangeAtom } from '../src/store/app';
 import { TestProviders } from './helpers/TestProviders';
@@ -25,12 +26,25 @@ vi.mock('../src/hooks/useAPI.tsx', () => ({
     useGetDeviceOperationListPerf: vi.fn(),
     useOpToPerfIdFiltered: vi.fn(),
     useOperationListRange: vi.fn(),
-    useOperationsList: vi.fn(),
+    useOperationsSummary: vi.fn(),
+    // The slider is mounted on every route, and the full list is hundreds of MB on a large
+    // report; its labels need only ids and names, which the summary carries.
+    useOperationsList: () => {
+        throw new Error('Range must read useOperationsSummary, not the full operations list');
+    },
     usePerformanceRange: vi.fn(),
     usePerformanceReport: vi.fn(),
 }));
 
 const perfRow = (id: string, rawOpCode: string) => ({ id, raw_op_code: rawOpCode }) as PerfTableRow;
+
+const operationSummary = (id: number, name: string): OperationSummary => ({
+    id,
+    name,
+    operation_file_identifier: '',
+    device_operation_start_names: [],
+    device_operation_end_names: [],
+});
 
 // The id the slider hands the label renderer is a number; the report's ids are strings.
 const REPORT = [perfRow('2', 'Matmul'), perfRow('3', 'Softmax'), perfRow('3', 'Duplicate'), perfRow('4', 'Reduce')];
@@ -59,7 +73,7 @@ const renderRange = (performanceRange: [number, number]) => {
 afterEach(cleanup);
 
 beforeEach(() => {
-    (useOperationsList as Mock).mockReturnValue({ data: undefined });
+    (useOperationsSummary as Mock).mockReturnValue({ data: undefined });
     (usePerformanceReport as Mock).mockReturnValue({
         data: { report: REPORT, stacked_report: [], signposts: [] },
         error: null,
@@ -111,5 +125,54 @@ describe('Range performance labels', () => {
         expect(handleLabels(container)).toEqual(['1\xA0Matmul', `${LARGE_REPORT_ROW_COUNT}\xA0Matmul`]);
         // One read per row to index them, plus the handful the rendered handle labels print
         expect(idReads).toBeLessThan(LARGE_REPORT_ROW_COUNT + HANDLE_LABEL_READ_ALLOWANCE);
+    });
+});
+
+describe('Range operation labels', () => {
+    // Off the performance route, where the operation slider is the one the user drives.
+    const renderOperationRange = (operationRange: [number, number]) => {
+        (useOperationListRange as Mock).mockReturnValue(operationRange);
+        (usePerformanceRange as Mock).mockReturnValue(null);
+        (usePerformanceReport as Mock).mockReturnValue({ data: undefined, error: null });
+
+        return render(
+            <TestProviders initialEntries={[ROUTES.OPERATIONS]}>
+                <Range />
+            </TestProviders>,
+        );
+    };
+
+    it('names the operation each handle sits on from the operations summary', () => {
+        (useOperationsSummary as Mock).mockReturnValue({
+            data: [
+                operationSummary(2, 'ttnn.matmul'),
+                operationSummary(3, 'ttnn.softmax'),
+                operationSummary(4, 'ttnn.sum'),
+            ],
+        });
+
+        const { container } = renderOperationRange([2, 4]);
+
+        expect(handleLabels(container)).toEqual(['2\xA0ttnn.matmul', '4\xA0ttnn.sum']);
+    });
+
+    it('names the first operation when the summary repeats an id', () => {
+        (useOperationsSummary as Mock).mockReturnValue({
+            data: [
+                operationSummary(2, 'ttnn.matmul'),
+                operationSummary(2, 'ttnn.shadowed'),
+                operationSummary(4, 'ttnn.sum'),
+            ],
+        });
+
+        const { container } = renderOperationRange([2, 4]);
+
+        expect(handleLabels(container)).toEqual(['2\xA0ttnn.matmul', '4\xA0ttnn.sum']);
+    });
+
+    it('falls back to the bare id while the summary is loading', () => {
+        const { container } = renderOperationRange([2, 4]);
+
+        expect(handleLabels(container)).toEqual(['2', '4']);
     });
 });

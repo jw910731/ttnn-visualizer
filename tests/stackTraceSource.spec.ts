@@ -7,7 +7,9 @@ import {
     extractOperationSourceData,
     getStackTraceFilePath,
     getStackTraceLineNumber,
+    parseFileOperationIdentifier,
 } from '../src/functions/stackTraceSource';
+import operationFileIdentifierCases from './data/operationFileIdentifierCases.json';
 
 const PYTHON_TRACE =
     'File "/models/resnet/ttnn_functional_resnet50.py", line 641, in forward\n    return ttnn.matmul(a, b)';
@@ -66,5 +68,13 @@ describe('extractOperationSourceData', () => {
                 stack_trace_source_file_id: null,
             }),
         ).toBeNull();
+    });
+});
+
+// `/api/operations/summary` computes the same identifier on the server. Its tests run these cases
+// too, so a change to either implementation fails one side; the expectations are this function's.
+describe('parseFileOperationIdentifier', () => {
+    it.each(operationFileIdentifierCases)('reads $description', ({ stackTrace, expected }) => {
+        expect(parseFileOperationIdentifier(stackTrace)).toBe(expected);
     });
 });

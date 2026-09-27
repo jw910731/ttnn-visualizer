@@ -5,6 +5,8 @@
 import { PerfTableRow } from '../model/PerfTable';
 import { DeviceOperationMapping, DeviceOperationOrderCandidates } from '../model/DeviceOperationMapping';
 import { OpType } from '../definitions/Performance';
+import { OperationSummary } from '../model/APIData';
+import { isDeviceOperation } from './filterOperations';
 
 /**
  * What every failed match returns. One shared value rather than a fresh `[]` per
@@ -136,6 +138,35 @@ export const matchDeviceOperationsToPerf = (
     }
 
     return alignCollapsedToPerfRows(deviceOperations, alignableRows, numDevices);
+};
+
+/**
+ * @description Both orders a memory report's device operations can be matched in:
+ * by `function_start` node, and by `function_end` node for captures whose profiler
+ * rows are child-first (see `matchDeviceOperationOrdersToPerf`). The summary carries
+ * every name its graph holds, so `isDeviceOperation` is applied here.
+ */
+export const buildDeviceOperationOrderCandidates = (
+    operations?: readonly OperationSummary[],
+): DeviceOperationOrderCandidates => {
+    const functionStartOperations: DeviceOperationMapping[] = [];
+    const functionEndOperations: DeviceOperationMapping[] = [];
+
+    for (const operation of operations ?? []) {
+        for (const name of operation.device_operation_start_names) {
+            if (isDeviceOperation(name)) {
+                functionStartOperations.push({ name, id: operation.id, operationName: operation.name });
+            }
+        }
+
+        for (const name of operation.device_operation_end_names) {
+            if (isDeviceOperation(name)) {
+                functionEndOperations.push({ name, id: operation.id, operationName: operation.name });
+            }
+        }
+    }
+
+    return { functionStartOperations, functionEndOperations };
 };
 
 const hasSameDeviceOperations = (

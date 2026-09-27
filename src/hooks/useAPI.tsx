@@ -20,6 +20,7 @@ import {
     NodeType,
     OperationDescription,
     OperationDetailsData,
+    OperationSummary,
     ReportMetadataResponse,
     Tensor,
     defaultBuffer,
@@ -30,8 +31,11 @@ import parseMemoryConfig, { memoryConfigPattern } from '../functions/parseMemory
 import { MemoryConfig } from '../model/MemoryConfig';
 import getServerConfig from '../functions/getServerConfig';
 import { PerfTableRow } from '../model/PerfTable';
-import { DeviceOperationMapping, DeviceOperationOrderCandidates } from '../model/DeviceOperationMapping';
-import { matchDeviceOperationOrdersToPerf } from '../functions/deviceOperationMatching';
+import { DeviceOperationMapping } from '../model/DeviceOperationMapping';
+import {
+    buildDeviceOperationOrderCandidates,
+    matchDeviceOperationOrdersToPerf,
+} from '../functions/deviceOperationMatching';
 import memoiseLatest from '../functions/memoiseLatest';
 import {
     PerformanceReportParams,
@@ -43,6 +47,7 @@ import { L1PressureResult } from '../model/L1Pressure';
 import { buildL1PressureResult } from '../functions/l1Pressure';
 import { StackedPerfRow } from '../definitions/StackedPerfTable';
 import { isDeviceOperation } from '../functions/filterOperations';
+import { parseFileOperationIdentifier } from '../functions/stackTraceSource';
 import { normalizeBufferPagesResponse } from '../functions/normalizeBufferPagesResponse';
 import { filterByOperationRange } from '../functions/filterByOperationRange';
 import { getPerformanceRange } from '../functions/perfRangeSelection';
@@ -130,20 +135,6 @@ const updateDeviceOperationId = (nodes: unknown): void => {
     }
 };
 
-const parseFileOperationIdentifier = (stackTrace: string): string => {
-    if (!stackTrace) {
-        return '';
-    }
-    const regex = /File\s+"(?:.+\/)?([^/]+)",\s+line\s+(\d+)/;
-    const match = stackTrace.match(regex);
-
-    if (match) {
-        return `${match[1]}:${match[2]}`;
-    }
-
-    return '';
-};
-
 export const fetchInstance = async (): Promise<Instance | null> => {
     const response = await axiosInstance.get<Instance>(Endpoints.INSTANCE);
     return response?.data ?? null;
@@ -190,15 +181,13 @@ const fetchOperationDetails = async (id: number | null): Promise<OperationDetail
     };
 };
 
-type DeviceOperationNodeType = NodeType.function_start | NodeType.function_end;
-
-const getDeviceOperationNameList = (operation: OperationDescription, nodeType: DeviceOperationNodeType): string[] => {
+const getDeviceOperationNameList = (operation: OperationDescription): string[] => {
     if (!Array.isArray(operation.device_operations)) {
         return [];
     }
 
     return operation.device_operations
-        .filter((op) => op.node_type === nodeType && isDeviceOperation(op.params.name))
+        .filter((op) => op.node_type === NodeType.function_start && isDeviceOperation(op.params.name))
         .map((op) => (op.params as DeviceOperationParams).name);
 };
 
@@ -248,7 +237,7 @@ const fetchOperations = async (): Promise<OperationDescription[]> => {
             outputs,
             inputs,
             arguments: argumentsWithParsedValues,
-            deviceOperationNameList: getDeviceOperationNameList(operation, NodeType.function_start),
+            deviceOperationNameList: getDeviceOperationNameList(operation),
         } as OperationDescription;
     });
 };
@@ -653,14 +642,50 @@ export const useOperationsList = () => {
     });
 };
 
+const fetchOperationsSummary = async (): Promise<OperationSummary[]> => {
+    const { data } = await axiosInstance.get<OperationSummary[]>(Endpoints.OPERATIONS_SUMMARY);
+
+    // A body that did not parse as JSON (a proxy's error page, a truncated response) arrives as a
+    // string. The footer builds the report match from this list on every route, and that would
+    // throw while rendering and replace the whole page with the error screen; failing the query
+    // leaves the page up and the link status unavailable.
+    if (!Array.isArray(data)) {
+        throw new AxiosError(
+            `Invalid response from ${Endpoints.OPERATIONS_SUMMARY}: expected an array, got ${typeof data}`,
+            AxiosError.ERR_BAD_RESPONSE,
+        );
+    }
+
+    return data;
+};
+
+/**
+ * @description Id, name, file identifier and device-operation names for every
+ * operation. Anything mounted on every route, or on the performance route, reads
+ * this rather than `useOperationsList`: the full list carries each operation's
+ * captured graph and tensors, hundreds of MB on a large report, and fetching it
+ * costs the backend a tensor read these consumers never use.
+ */
+export const useOperationsSummary = () => {
+    const activeProfilerReport = useAtomValue(activeProfilerReportAtom);
+
+    return useQuery<OperationSummary[], AxiosError>({
+        queryFn: fetchOperationsSummary,
+        queryKey: ['get-operations-summary', activeProfilerReport?.path],
+        enabled: activeProfilerReport !== null,
+        retry: false,
+        staleTime: Infinity,
+    });
+};
+
 export const useOperationListRange = (): NumberRange | null => {
-    const response = useOperationsList();
+    const { data: operations } = useOperationsSummary();
 
     return useMemo(
-        () => (response?.data?.length ? [response.data?.[0].id, response.data?.[response.data.length - 1].id] : null),
+        () => (operations?.length ? [operations[0].id, operations[operations.length - 1].id] : null),
         // TODO: this used to rely on response.isLoading... which iis an invalid dependency. will have to wait for david to come back.
         // this fixes https://github.com/tenstorrent/ttnn-visualizer/issues/613
-        [response.data],
+        [operations],
     );
 };
 
@@ -862,38 +887,10 @@ export const useGetDeviceOperationsListByOp = () => {
 // Memoised across call sites, not per hook invocation:
 // `useGetDeviceOperationListPerf` is read by several hooks and by one component
 // instance per virtualised row, so `useMemo` would rebuild both order candidates
-// and rerun the O(rows) match for each. The inputs are shared React Query results.
-// Callers must not mutate the derived values — they share them now.
-const getDeviceOperationOrderCandidates = memoiseLatest(
-    (operations?: OperationDescription[]): DeviceOperationOrderCandidates => {
-        const functionStartOperations: DeviceOperationMapping[] = [];
-        const functionEndOperations: DeviceOperationMapping[] = [];
-
-        if (!operations) {
-            return { functionStartOperations, functionEndOperations };
-        }
-
-        for (const operation of operations) {
-            for (const name of operation.deviceOperationNameList) {
-                functionStartOperations.push({
-                    name,
-                    id: operation.id,
-                    operationName: operation.name,
-                });
-            }
-
-            for (const name of getDeviceOperationNameList(operation, NodeType.function_end)) {
-                functionEndOperations.push({
-                    name,
-                    id: operation.id,
-                    operationName: operation.name,
-                });
-            }
-        }
-
-        return { functionStartOperations, functionEndOperations };
-    },
-);
+// and rerun the O(rows) match for each. The inputs are shared React Query results:
+// the operations summary rather than the full list, which the performance route
+// no longer loads. Callers must not mutate the derived values — they share them now.
+const getDeviceOperationOrderCandidates = memoiseLatest(buildDeviceOperationOrderCandidates);
 
 const getDeviceOperationListPerf = memoiseLatest(matchDeviceOperationOrdersToPerf);
 
@@ -943,7 +940,7 @@ export const clearReportCaches = (queryClient: QueryClient) => {
 };
 
 export const useGetDeviceOperationListPerf = () => {
-    const { data: operations } = useOperationsList();
+    const { data: operations } = useOperationsSummary();
     const deviceOperationOrderCandidates = getDeviceOperationOrderCandidates(operations);
     const { data: devices } = useDevices();
     const { data } = useLinkedPerformanceReport();

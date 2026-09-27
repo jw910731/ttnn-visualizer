@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: © 2026 Tenstorrent AI ULC
 
 import { useAtomValue } from 'jotai';
-import { useDevices, useGetDeviceOperationListPerf, useLinkedPerformanceReport, useOperationsList } from './useAPI';
+import { useDevices, useGetDeviceOperationListPerf, useLinkedPerformanceReport, useOperationsSummary } from './useAPI';
 import { activePerformanceReportAtom, activeProfilerReportAtom } from '../store/app';
 import { ReportLinkMatchResult } from '../definitions/ReportLinks';
 
@@ -20,7 +20,7 @@ export const useReportLinkMatch = (): ReportLinkMatchResult => {
         isFetched: isOperationsFetched,
         isFetching: isOperationsFetching,
         isError: isOperationsError,
-    } = useOperationsList();
+    } = useOperationsSummary();
     const { isFetched: isDevicesFetched, isFetching: isDevicesFetching, isError: isDevicesError } = useDevices();
     const {
         isFetched: isPerformanceFetched,

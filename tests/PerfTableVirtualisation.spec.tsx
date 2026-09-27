@@ -12,7 +12,13 @@ import { OpType } from '../src/definitions/Performance';
 import { TEST_IDS } from '../src/definitions/TestIds';
 import { getRowGroupKeys } from '../src/functions/perfFunctions';
 import { DEFAULT_MAX_CORES } from '../src/functions/getCoreCount';
-import { useGetNPEManifest, useOpToPerfIdFiltered, useOperationsList, usePerfMeta } from '../src/hooks/useAPI';
+import {
+    useGetNPEManifest,
+    useOpToPerfIdFiltered,
+    useOperationsList,
+    useOperationsSummary,
+    usePerfMeta,
+} from '../src/hooks/useAPI';
 import { TypedPerfTableRow, signpostRowDefaults } from '../src/model/PerfTable';
 import { TestProviders } from './helpers/TestProviders';
 
@@ -23,6 +29,7 @@ vi.mock('../src/hooks/useAPI.tsx', () => ({
     useGetNPEManifest: vi.fn(),
     useOpToPerfIdFiltered: vi.fn(),
     useOperationsList: vi.fn(),
+    useOperationsSummary: vi.fn(),
     usePerfMeta: vi.fn(),
 }));
 
@@ -153,6 +160,7 @@ beforeEach(() => {
 
     (useGetNPEManifest as Mock).mockReturnValue(NPE_MANIFEST);
     (useOperationsList as Mock).mockReturnValue(OPERATIONS);
+    (useOperationsSummary as Mock).mockReturnValue(OPERATIONS);
     (usePerfMeta as Mock).mockReturnValue(PERF_META);
     (useOpToPerfIdFiltered as Mock).mockReturnValue([{ opId: 1, perfId: '1' }]);
     formatCellSpy.mockClear();

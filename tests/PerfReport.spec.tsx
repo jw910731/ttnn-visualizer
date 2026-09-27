@@ -11,7 +11,13 @@ import { TypedPerfTableRow } from '../src/model/PerfTable';
 import { PERF_DURATION_BUCKET_FILTER_PLACEHOLDER } from '../src/definitions/PerfDurationHistogram';
 import { OpType } from '../src/definitions/Performance';
 import { TEST_IDS } from '../src/definitions/TestIds';
-import { useGetNPEManifest, useOpToPerfIdFiltered, useOperationsList, usePerfMeta } from '../src/hooks/useAPI';
+import {
+    useGetNPEManifest,
+    useOpToPerfIdFiltered,
+    useOperationsList,
+    useOperationsSummary,
+    usePerfMeta,
+} from '../src/hooks/useAPI';
 import {
     comparisonPerformanceReportListAtom,
     durationBucketFilterListAtom,
@@ -29,6 +35,7 @@ vi.mock('../src/hooks/useAPI.tsx', () => ({
     useGetNPEManifest: vi.fn(),
     useOpToPerfIdFiltered: vi.fn(),
     useOperationsList: vi.fn(),
+    useOperationsSummary: vi.fn(),
     usePerfMeta: vi.fn(),
 }));
 
@@ -112,6 +119,7 @@ beforeEach(() => {
     (useGetNPEManifest as Mock).mockReturnValue({ data: [], error: null });
     (useOpToPerfIdFiltered as Mock).mockReturnValue([]);
     (useOperationsList as Mock).mockReturnValue({ data: [] });
+    (useOperationsSummary as Mock).mockReturnValue({ data: [] });
     (usePerfMeta as Mock).mockReturnValue({ data: null, isLoading: false });
 });
 

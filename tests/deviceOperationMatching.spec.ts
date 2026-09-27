@@ -5,10 +5,12 @@
 import { describe, expect, it } from 'vitest';
 import {
     NO_DEVICE_OPERATION_MATCHES,
+    buildDeviceOperationOrderCandidates,
     collapseMultideviceOperations,
     matchDeviceOperationOrdersToPerf,
     matchDeviceOperationsToPerf,
 } from '../src/functions/deviceOperationMatching';
+import { OperationSummary } from '../src/model/APIData';
 import { PerfTableRow } from '../src/model/PerfTable';
 import { DeviceOperationMapping } from '../src/model/DeviceOperationMapping';
 import { OpType } from '../src/definitions/Performance';
@@ -386,5 +388,79 @@ describe('collapseMultideviceOperations', () => {
         ];
 
         expect(collapseMultideviceOperations(deviceOperations, 2).map(({ name }) => name)).toEqual(['Alpha']);
+    });
+});
+
+const summary = (
+    id: number,
+    name: string,
+    startNames: string[],
+    endNames: string[] = [...startNames].reverse(),
+): OperationSummary => ({
+    id,
+    name,
+    operation_file_identifier: '',
+    device_operation_start_names: startNames,
+    device_operation_end_names: endNames,
+});
+
+describe('buildDeviceOperationOrderCandidates', () => {
+    it('pairs every device operation name with its operation, in graph order', () => {
+        const candidates = buildDeviceOperationOrderCandidates([
+            summary(3, 'ttnn.matmul', ['MatmulDeviceOperation', 'MatmulDeviceOperation']),
+            summary(4, 'ttnn.add', ['BinaryDeviceOperation']),
+        ]);
+
+        expect(candidates.functionStartOperations).toEqual([
+            { name: 'MatmulDeviceOperation', id: 3, operationName: 'ttnn.matmul' },
+            { name: 'MatmulDeviceOperation', id: 3, operationName: 'ttnn.matmul' },
+            { name: 'BinaryDeviceOperation', id: 4, operationName: 'ttnn.add' },
+        ]);
+        expect(candidates.functionEndOperations).toEqual(candidates.functionStartOperations);
+    });
+
+    // The summary carries every function name the graph holds; which of them are device
+    // operations is decided here, by the same rule the operations list applies.
+    it('keeps only device operations, in both orders', () => {
+        const hostNames = ['ttnn.matmul', 'Tensor::to_device', 'aten::add (torch)', ''];
+        const candidates = buildDeviceOperationOrderCandidates([
+            summary(1, 'ttnn.matmul', [...hostNames, 'MatmulDeviceOperation'], ['MatmulDeviceOperation', ...hostNames]),
+        ]);
+
+        expect(candidates.functionStartOperations.map(({ name }) => name)).toEqual(['MatmulDeviceOperation']);
+        expect(candidates.functionEndOperations.map(({ name }) => name)).toEqual(['MatmulDeviceOperation']);
+    });
+
+    it('builds the end order even when the capture recorded no start names', () => {
+        const candidates = buildDeviceOperationOrderCandidates([summary(59, 'ttnn.sparse_matmul', [], ['UnaryOp'])]);
+
+        expect(candidates.functionStartOperations).toEqual([]);
+        expect(candidates.functionEndOperations).toEqual([
+            { name: 'UnaryOp', id: 59, operationName: 'ttnn.sparse_matmul' },
+        ]);
+    });
+
+    it('builds empty candidates before the summary has loaded', () => {
+        expect(buildDeviceOperationOrderCandidates(undefined)).toEqual({
+            functionStartOperations: [],
+            functionEndOperations: [],
+        });
+    });
+
+    it('links a child-first capture in end order from summary names (#1860)', () => {
+        const candidates = buildDeviceOperationOrderCandidates([
+            summary(59, 'ttnn.sparse_matmul', ['SparseMatmulDeviceOperation', 'UnaryDeviceOperation']),
+        ]);
+
+        const matched = matchDeviceOperationOrdersToPerf(
+            candidates,
+            perfRowsFor(['UnaryDeviceOperation', 'SparseMatmulDeviceOperation']),
+            1,
+        );
+
+        expect(matched.map(({ name, id }) => [name, id])).toEqual([
+            ['UnaryDeviceOperation', 59],
+            ['SparseMatmulDeviceOperation', 59],
+        ]);
     });
 });

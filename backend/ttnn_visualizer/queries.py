@@ -12,8 +12,10 @@ from typing import (
     Any,
     Dict,
     Generator,
+    Iterator,
     List,
     Optional,
+    Tuple,
     Type,
     Union,
     get_args,
@@ -122,6 +124,23 @@ class LocalQueryRunner:
         finally:
             cursor.close()
 
+    def iterate_query(
+        self, query: str, params: Optional[List] = None
+    ) -> Iterator[Tuple[Any, ...]]:
+        """
+        Yields a query's rows one at a time rather than fetching them all first.
+
+        For columns whose total dwarfs any one row -- ``captured_graph`` holds
+        240 MB of JSON on an 18,740-operation report -- ``fetchall`` makes the
+        whole column resident at once just so the caller can reduce it row by row.
+        """
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(query, params or [])
+            yield from cursor
+        finally:
+            cursor.close()
+
     def close(self):
         if self.connection:
             self.connection.close()
@@ -220,6 +239,37 @@ class DatabaseQueries:
         columns: Optional[List[str]] = None,
         select_clause: Optional[str] = None,
     ) -> List[Any]:
+        query, params = self._select_statement(
+            table_name,
+            filters,
+            additional_conditions,
+            additional_params,
+            columns,
+            select_clause,
+        )
+        return self.query_runner.execute_query(query, params)
+
+    def _iterate_table(
+        self,
+        table_name: str,
+        filters: Optional[Dict[str, Union[Any, List[Any]]]] = None,
+        select_clause: Optional[str] = None,
+    ) -> Iterator[Tuple[Any, ...]]:
+        """``_query_table``, streamed: see ``LocalQueryRunner.iterate_query``."""
+        query, params = self._select_statement(
+            table_name, filters, select_clause=select_clause
+        )
+        return self.query_runner.iterate_query(query, params)
+
+    @staticmethod
+    def _select_statement(
+        table_name: str,
+        filters: Optional[Dict[str, Union[Any, List[Any]]]] = None,
+        additional_conditions: Optional[str] = None,
+        additional_params: Optional[List[Any]] = None,
+        columns: Optional[List[str]] = None,
+        select_clause: Optional[str] = None,
+    ) -> Tuple[str, List[Any]]:
         if select_clause is not None:
             columns_str = select_clause
         elif columns:
@@ -227,7 +277,7 @@ class DatabaseQueries:
         else:
             columns_str = "*"
         query = f"SELECT {columns_str} FROM {table_name} WHERE 1=1"
-        params = []
+        params: List[Any] = []
 
         if filters:
             for column, value in filters.items():
@@ -249,7 +299,7 @@ class DatabaseQueries:
             if additional_params:
                 params.extend(additional_params)
 
-        return self.query_runner.execute_query(query, params)
+        return query, params
 
     def merge_rank_filter(
         self,
@@ -417,6 +467,21 @@ class DatabaseQueries:
         rows = self._query_table("captured_graph", filters, select_clause=select_clause)
         return [DeviceOperation(*row) for row in rows]
 
+    def stream_device_operations(
+        self, filters: Optional[Dict[str, Union[Any, List[Any]]]] = None
+    ) -> Iterator[DeviceOperation]:
+        """
+        ``query_device_operations`` one row at a time, for a caller that reduces
+        each graph as it goes and never needs two at once.
+        """
+        if not self._check_table_exists("captured_graph"):
+            return
+        select_clause = self._dataclass_select_clause("captured_graph", DeviceOperation)
+        for row in self._iterate_table(
+            "captured_graph", filters, select_clause=select_clause
+        ):
+            yield DeviceOperation(*row)
+
     def query_operation_arguments(
         self, filters: Optional[Dict[str, Union[Any, List[Any]]]] = None
     ) -> Generator[OperationArgument, None, None]:
@@ -456,6 +521,23 @@ class DatabaseQueries:
         select_clause = self._dataclass_select_clause("stack_traces", StackTrace)
         rows = self._query_table("stack_traces", filters, select_clause=select_clause)
         for row in rows:
+            yield StackTrace(*row)
+
+    def stream_stack_traces(
+        self, filters: Optional[Dict[str, Any]] = None
+    ) -> Iterator[StackTrace]:
+        """
+        ``query_stack_traces`` without fetching the table first. Its generator
+        still materialises every row before yielding the first, and traces
+        average 7 KB, so a caller reducing each to a few bytes would otherwise
+        hold the whole column -- 70 MB on the largest local report.
+        """
+        if not self._check_table_exists("stack_traces"):
+            return
+        select_clause = self._dataclass_select_clause("stack_traces", StackTrace)
+        for row in self._iterate_table(
+            "stack_traces", filters, select_clause=select_clause
+        ):
             yield StackTrace(*row)
 
     def query_source_files(

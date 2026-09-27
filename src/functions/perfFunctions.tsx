@@ -11,7 +11,7 @@ import { BoundType, ColumnDefinition, ColumnKeys } from '../definitions/PerfTabl
 import { TypedPerfTableRow } from '../model/PerfTable';
 import { isFlagEnabled } from './getServerConfig';
 import { MIN_TOTAL_PERCENT } from '../definitions/PerfHeuristics';
-import { OperationDescription } from '../model/APIData';
+import { OperationSummary } from '../model/APIData';
 import { formatMemorySize, formatPercentage, formatSize, toSecondsPretty } from './math';
 import ROUTES from '../definitions/Routes';
 import HighlightedText from '../components/HighlightedText';
@@ -64,7 +64,7 @@ const KERNEL_CRITICAL_PATH_SHARE = 0.9;
 
 export type PerfCellValue = TypedPerfTableRow[ColumnKeys];
 
-export type OperationsById = ReadonlyMap<number, OperationDescription>;
+export type OperationsById = ReadonlyMap<number, OperationSummary>;
 
 /**
  * Whether `formatCell` renders nothing for this cell regardless of the column's own formatting.
@@ -622,11 +622,11 @@ export function evaluateFidelity(
 }
 
 /**
- * Indexes operations by id for the OP column, which looks one up for every row it renders. A repeated
- * id keeps its first operation.
+ * Indexes operations by id for the OP column, which looks one up for every row it renders, and for the
+ * range slider's labels. A repeated id keeps its first operation.
  */
-export function getOperationsById(operations: OperationDescription[]): OperationsById {
-    const operationsById = new Map<number, OperationDescription>();
+export function getOperationsById(operations: readonly OperationSummary[]): OperationsById {
+    const operationsById = new Map<number, OperationSummary>();
 
     for (const operation of operations) {
         if (!operationsById.has(operation.id)) {
@@ -640,7 +640,7 @@ export function getOperationsById(operations: OperationDescription[]): Operation
 export function getOperationDetails(operationsById: OperationsById, id: number) {
     const matchingOp = operationsById.get(id);
 
-    return matchingOp ? `${matchingOp.name} (${matchingOp.operationFileIdentifier})` : '';
+    return matchingOp ? `${matchingOp.name} (${matchingOp.operation_file_identifier})` : '';
 }
 
 export function getAxisUpperRange(arrays: Array<unknown[]>): number {

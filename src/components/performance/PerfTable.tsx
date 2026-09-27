@@ -15,7 +15,7 @@ import ROUTES from '../../definitions/Routes';
 import { formatPercentage, formatSize } from '../../functions/math';
 import { getOperationsById, isHostOp } from '../../functions/perfFunctions';
 import { getEligiblePerfColumns, getFooterColumns, getVisiblePerfColumns } from '../../functions/perfTableColumns';
-import { useGetNPEManifest, useOpToPerfIdFiltered, useOperationsList } from '../../hooks/useAPI';
+import { useGetNPEManifest, useOpToPerfIdFiltered, useOperationsSummary } from '../../hooks/useAPI';
 import usePerfTableColumnSizing from '../../hooks/usePerfTableColumnSizing';
 import useSortTable, { SortingDirection } from '../../hooks/useSortTable';
 import { NPEManifestEntry } from '../../model/NPEModel';
@@ -57,8 +57,8 @@ interface PerformanceTableProps {
     isLoading?: boolean;
     // Identifies which comparison dataset holds the active profiler report's rows. The
     // tensor-drawer trigger only renders on those rows, since op-id sync from
-    // `useOpToPerfIdFiltered()` and tensor lookups in `useOperationsList()` are both
-    // keyed to the active report. When `null` (default), `data` is the active report
+    // `useOpToPerfIdFiltered()` and the drawer's tensor lookups in `useOperationsList()`
+    // are both keyed to the active report. When `null` (default), `data` is the active report
     // and triggers render on the primary rows.
     activeReportComparisonIndex?: number | null;
 }
@@ -83,7 +83,7 @@ const PerformanceTable = ({
 
     const { sortTableFields, changeSorting, sortingColumn, sortDirection } = useSortTable(null);
     const opIdsMap = useOpToPerfIdFiltered();
-    const { data: operationsList } = useOperationsList();
+    const { data: operationsSummary } = useOperationsSummary();
     const { data: npeManifest, error: npeManifestError } = useGetNPEManifest();
     const navigate = useNavigate();
 
@@ -177,7 +177,10 @@ const PerformanceTable = ({
         }
     }, [canShowTensorDrawer, activeReportRows, selectedPerfRowId, setSelectedPerfRowId]);
 
-    const operationsById = useMemo(() => (operationsList ? getOperationsById(operationsList) : null), [operationsList]);
+    const operationsById = useMemo(
+        () => (operationsSummary ? getOperationsById(operationsSummary) : null),
+        [operationsSummary],
+    );
 
     const npeFileByGlobalCallCount = useMemo(() => getNpeFileByGlobalCallCount(npeManifest), [npeManifest]);
 

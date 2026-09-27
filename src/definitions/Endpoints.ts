@@ -18,6 +18,7 @@ enum Endpoints {
     MLIR = '/api/mlir',
     OPERATION_BUFFERS = '/api/operation-buffers',
     OPERATIONS_LIST = '/api/operations',
+    OPERATIONS_SUMMARY = '/api/operations/summary',
     PERFORMANCE = '/api/performance',
     PERFORMANCE_RESULTS_REPORT = '/api/performance/perf-results/report',
     PROFILER = '/api/profiler',

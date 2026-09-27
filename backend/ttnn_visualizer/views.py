@@ -115,6 +115,7 @@ from ttnn_visualizer.serializers import (
     serialize_operation_buffers,
     serialize_operations,
     serialize_operations_buffers,
+    serialize_operations_summary,
     serialize_tensors,
 )
 from ttnn_visualizer.sftp_operations import (
@@ -489,6 +490,43 @@ def operation_list(instance: Instance):
             orjson.dumps(serialized_operations),
             mimetype="application/json",
         )
+
+
+@api.route("/operations/summary", methods=["GET"])
+@with_instance
+@timer
+def operation_summary_list(instance: Instance):
+    """
+    Id, name, file identifier and device-operation names for every operation:
+    what the views mounted on every route read, without the rest of
+    ``/operations``.
+
+    Readable under ``SERVER_MODE`` for the reason ``/operations`` is: it reads
+    the instance's own loaded report and nothing else, and every field is a
+    subset of that route's.
+
+    Reads only ``operations``, ``captured_graph`` and ``stack_traces``. The
+    tensor reads are what make ``/operations`` slow -- ``query_tensors`` has
+    SQLite build an automatic index over every ``buffers`` row, ~10 s on a
+    report with 11M of them -- and nothing here needs a tensor.
+    """
+    rank = _rank_query_param()
+    with DatabaseQueries(instance) as db:
+        rejected = _reject_nonzero_rank_on_legacy_db(db, rank)
+        if rejected is not None:
+            return rejected
+        operations = list(
+            db.query_operations(db.merge_rank_filter("operations", None, rank))
+        )
+        operations.sort(key=lambda o: o.operation_id)
+        summaries = serialize_operations_summary(
+            operations,
+            db.stream_device_operations(
+                db.merge_rank_filter("captured_graph", None, rank)
+            ),
+            db.stream_stack_traces(db.merge_rank_filter("stack_traces", None, rank)),
+        )
+        return Response(orjson.dumps(summaries), mimetype="application/json")
 
 
 @api.route("/operations/<operation_id>", methods=["GET"])

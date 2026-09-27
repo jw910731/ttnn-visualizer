@@ -361,7 +361,7 @@ export const remoteConnectionKey = (connection?: RemoteConnection | null): strin
 
 ### Use `axiosInstance` for HTTP requests; never call raw `axios.get/post/put/delete` at a call site
 
-**Rationale.** The shared instance in `src/libs/axiosInstance.ts` carries two interceptors every consumer depends on: a request interceptor that injects `instanceId` into query params, and a response interceptor that auto-retries the operations endpoint when a large payload comes back as a string instead of an array. Bypassing the instance means losing both.
+**Rationale.** The shared instance in `src/libs/axiosInstance.ts` carries two interceptors every consumer depends on: a request interceptor that injects `instanceId` into query params, and a response interceptor that auto-retries the operations endpoints when a large payload comes back as a string instead of an array. Bypassing the instance means losing both.
 
 **Scope.** This rule applies to **HTTP request methods** (`.get/.post/.put/.delete/.patch/.head`). Importing types and helpers from the `axios` package — `AxiosError`, `AxiosProgressEvent`, `AxiosRequestConfig`, `HttpStatusCode`, `axios.isAxiosError` — at a call site is fine and idiomatic; you'll see this pattern in `src/functions/getResponseError.ts`, `src/hooks/useRemote.tsx`, `src/hooks/useAPI.tsx`, and elsewhere. The thing to never do is `axios.get(url, ...)` at a call site — that bypasses the interceptors.
 
@@ -425,7 +425,7 @@ The `?name=` performance swap is no longer one of those cases: `views.py::_apply
 
 ### Cross-cutting retries belong in the interceptor, not in individual hooks
 
-The operations endpoint occasionally returns a string instead of an array under heavy load. The response interceptor handles this with `MAX_RETRIES = 3` and exponential backoff (`src/libs/axiosInstance.ts`). Don't replicate retry logic inside a `queryFn` — extend the interceptor instead so every consumer of the endpoint benefits.
+The operations endpoints (`/api/operations` and `/api/operations/summary`) occasionally return a string instead of an array under heavy load. The response interceptor handles this with `MAX_RETRIES = 3` and exponential backoff (`src/libs/axiosInstance.ts`). Don't replicate retry logic inside a `queryFn` — extend the interceptor instead so every consumer of the endpoint benefits. A `queryFn` may still refuse a body of the wrong shape, as `fetchOperationsSummary` does, so that the query fails rather than hand its consumers a string.
 
 ### The `socket` instance is module-scope in `SocketProvider`
 

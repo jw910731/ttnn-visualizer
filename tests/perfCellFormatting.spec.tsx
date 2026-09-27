@@ -16,7 +16,7 @@ import {
     getOperationsById,
     isSuppressedCell,
 } from '../src/functions/perfFunctions';
-import { OperationDescription } from '../src/model/APIData';
+import { OperationSummary } from '../src/model/APIData';
 import { TypedPerfTableRow } from '../src/model/PerfTable';
 
 const OP_COLUMN: ColumnDefinition = { name: 'OP', key: ColumnKeys.OP };
@@ -27,8 +27,13 @@ const DEVICE_TIME_COLUMN: ColumnDefinition = {
     decimals: 0,
 };
 
-const operation = (id: number, name: string, operationFileIdentifier: string): OperationDescription =>
-    ({ id, name, operationFileIdentifier }) as unknown as OperationDescription;
+const operation = (id: number, name: string, operationFileIdentifier: string): OperationSummary => ({
+    id,
+    name,
+    operation_file_identifier: operationFileIdentifier,
+    device_operation_start_names: [],
+    device_operation_end_names: [],
+});
 
 const makeRow = (overrides: Partial<TypedPerfTableRow>): TypedPerfTableRow =>
     ({

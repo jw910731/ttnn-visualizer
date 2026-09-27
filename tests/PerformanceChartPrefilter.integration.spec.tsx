@@ -15,6 +15,7 @@ import {
     useL1PressureByOperation,
     useOpToPerfIdFiltered,
     useOperationsList,
+    useOperationsSummary,
     usePerfFolderList,
     usePerfMeta,
     usePerfMetas,
@@ -37,6 +38,7 @@ vi.mock('../src/hooks/useAPI.tsx', () => ({
     useL1PressureByOperation: vi.fn(),
     useOpToPerfIdFiltered: vi.fn(),
     useOperationsList: vi.fn(),
+    useOperationsSummary: vi.fn(),
     usePerfFolderList: vi.fn(),
     usePerfMeta: vi.fn(),
     usePerfMetas: vi.fn(),
@@ -91,6 +93,7 @@ beforeEach(() => {
     (useGetNPEManifest as Mock).mockReturnValue({ data: [], error: null });
     (useOpToPerfIdFiltered as Mock).mockReturnValue([]);
     (useOperationsList as Mock).mockReturnValue({ data: [] });
+    (useOperationsSummary as Mock).mockReturnValue({ data: [] });
     (usePerfMeta as Mock).mockReturnValue({ data: null, isLoading: false });
     (usePerfMetas as Mock).mockReturnValue([]);
     (useL1PressureByOperation as Mock).mockReturnValue({ status: L1PressureStatus.Unavailable, data: null });

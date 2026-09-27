@@ -790,6 +790,7 @@ def test_invalid_rank_query_returns_400(app, client, rank, reason):
     "path,extra_query",
     [
         ("/api/operations", {}),
+        ("/api/operations/summary", {}),
         ("/api/tensors", {}),
         ("/api/devices", {}),
         ("/api/buffers", {}),

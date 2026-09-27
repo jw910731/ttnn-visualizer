@@ -249,6 +249,22 @@ export interface OperationDescription extends Operation {
     deviceOperationNameList: string[]; // List of device operation names. actual device ops only
 }
 
+/**
+ * One operation as `GET /api/operations/summary` returns it: the fields that views
+ * mounted on every route read, without the captured graph, tensors or stack trace
+ * that make `/api/operations` hundreds of MB on a large report.
+ */
+export interface OperationSummary {
+    id: number;
+    name: string;
+    /** `file:line` of the stack trace's first frame, or `''`; what `operationFileIdentifier` holds on the full list. */
+    operation_file_identifier: string;
+    /** `params.name` of every `function_start` node in graph order, before `isDeviceOperation` is applied. */
+    device_operation_start_names: string[];
+    /** As `device_operation_start_names`, for `function_end` nodes. */
+    device_operation_end_names: string[];
+}
+
 export enum NodeType {
     capture_start = 'capture_start',
     capture_end = 'capture_end',

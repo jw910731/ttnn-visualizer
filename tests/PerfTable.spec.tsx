@@ -12,7 +12,13 @@ import { TypedPerfTableRow, signpostRowDefaults } from '../src/model/PerfTable';
 import { PERF_HEURISTIC_FLAG_DEFINITIONS, PerfHeuristicFlag } from '../src/definitions/PerfHeuristics';
 import { OpType } from '../src/definitions/Performance';
 import { TEST_IDS } from '../src/definitions/TestIds';
-import { useGetNPEManifest, useOpToPerfIdFiltered, useOperationsList, usePerfMeta } from '../src/hooks/useAPI';
+import {
+    useGetNPEManifest,
+    useOpToPerfIdFiltered,
+    useOperationsList,
+    useOperationsSummary,
+    usePerfMeta,
+} from '../src/hooks/useAPI';
 import { hiddenPerfTableColumnsAtom, selectedPerfRowIdAtom } from '../src/store/app';
 import { TestProviders } from './helpers/TestProviders';
 import { DEFAULT_MAX_CORES } from '../src/functions/getCoreCount';
@@ -21,6 +27,7 @@ vi.mock('../src/hooks/useAPI.tsx', () => ({
     useGetNPEManifest: vi.fn(),
     useOpToPerfIdFiltered: vi.fn(),
     useOperationsList: vi.fn(),
+    useOperationsSummary: vi.fn(),
     usePerfMeta: vi.fn(),
 }));
 
@@ -81,6 +88,7 @@ beforeEach(() => {
     vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
     (useGetNPEManifest as Mock).mockReturnValue({ data: [], error: null });
     (useOperationsList as Mock).mockReturnValue({ data: [] });
+    (useOperationsSummary as Mock).mockReturnValue({ data: [] });
     (usePerfMeta as Mock).mockReturnValue({ data: null, isLoading: false });
 });
 

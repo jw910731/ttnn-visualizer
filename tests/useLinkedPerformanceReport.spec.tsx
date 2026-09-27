@@ -20,7 +20,7 @@ import {
     useGetDeviceOperationListPerfByOpId,
     useLinkedPerformanceReport,
     useOpToPerfIdFiltered,
-    useOperationsList,
+    useOperationsSummary,
     usePerformanceReport,
 } from '../src/hooks/useAPI';
 import {
@@ -37,6 +37,7 @@ import { StackedGroupBy } from '../src/definitions/StackedPerfTable';
 import { AtomProvider, type AtomProviderInitialValues } from './helpers/atomProvider';
 import axiosInstance from '../src/libs/axiosInstance';
 import Endpoints from '../src/definitions/Endpoints';
+import { OperationSummary } from '../src/model/APIData';
 
 vi.mock('../src/libs/axiosInstance', () => ({
     default: {
@@ -250,33 +251,28 @@ const unmergedRows = DEVICE_OP_NAMES.flatMap((name, index) =>
  */
 const mergedRows = DEVICE_OP_NAMES.map((_name, index) => unmergedRows[index * NUM_DEVICES]!);
 
-const memoryOperations = DEVICE_OP_NAMES.map((name, index) => ({
+const memoryOperations: OperationSummary[] = DEVICE_OP_NAMES.map((name, index) => ({
     id: index + 1,
     name: `ttnn.${name.toLowerCase()}`,
-    stack_trace: '',
-    inputs: [],
-    outputs: [],
-    arguments: [],
-    device_operations: [{ node_type: 'function_start', params: { name } }],
+    operation_file_identifier: '',
+    device_operation_start_names: [name],
+    device_operation_end_names: [],
 }));
 
 const NESTED_DEVICE_OP_NAMES = ['SparseMatmulDeviceOperation', 'UnaryDeviceOperation'];
-const nestedMemoryOperations = [
+const nestedMemoryOperations: OperationSummary[] = [
     {
         id: 59,
         name: 'ttnn.sparse_matmul',
-        stack_trace: '',
-        inputs: [],
-        outputs: [],
-        arguments: [],
-        device_operations: [
-            { node_type: 'function_start', params: { name: NESTED_DEVICE_OP_NAMES[0] } },
-            { node_type: 'function_start', params: { name: NESTED_DEVICE_OP_NAMES[1] } },
-            { node_type: 'function_end', params: { name: NESTED_DEVICE_OP_NAMES[1] } },
-            { node_type: 'function_end', params: { name: NESTED_DEVICE_OP_NAMES[0] } },
-        ],
+        operation_file_identifier: '',
+        // The graph as captured: the parent starts first and ends last.
+        device_operation_start_names: [NESTED_DEVICE_OP_NAMES[0], NESTED_DEVICE_OP_NAMES[1]],
+        device_operation_end_names: [NESTED_DEVICE_OP_NAMES[1], NESTED_DEVICE_OP_NAMES[0]],
     },
 ];
+
+const getOperationsListRequests = () =>
+    vi.mocked(axiosInstance.get).mock.calls.filter(([url]) => url === Endpoints.OPERATIONS_LIST);
 
 describe('report matching under a filtered performance tab', () => {
     beforeEach(() => {
@@ -299,7 +295,7 @@ describe('report matching under a filtered performance tab', () => {
                 });
             }
 
-            if (url.includes(Endpoints.OPERATIONS_LIST)) {
+            if (url === Endpoints.OPERATIONS_SUMMARY) {
                 return Promise.resolve({ data: [...memoryOperations] });
             }
 
@@ -325,6 +321,23 @@ describe('report matching under a filtered performance tab', () => {
         await waitFor(() => expect(result.current).toHaveLength(DEVICE_OP_NAMES.length));
 
         expect(result.current.map((operation) => operation.perfData?.raw_op_code)).toEqual(DEVICE_OP_NAMES);
+    });
+
+    // The match runs on every route, through the footer's range slider and link badge. The full
+    // list is hundreds of MB on a large report, so the summary has to be all it reads.
+    it('matches from the operations summary without requesting the full operations list', async () => {
+        const { result } = renderWithView(
+            () => useGetDeviceOperationListPerf(),
+            [[activeProfilerReportAtom, ACTIVE_REPORT]],
+        );
+
+        await waitFor(() => expect(result.current).toHaveLength(DEVICE_OP_NAMES.length));
+
+        expect(result.current.map(({ id, name, operationName }) => ({ id, name, operationName }))).toEqual([
+            { id: 1, name: 'Matmul', operationName: 'ttnn.matmul' },
+            { id: 2, name: 'Softmax', operationName: 'ttnn.softmax' },
+        ]);
+        expect(getOperationsListRequests()).toHaveLength(0);
     });
 
     // Keyed on the profiler op id, which is deliberately not the perf row's own id
@@ -356,7 +369,7 @@ describe('report matching under a filtered performance tab', () => {
                 });
             }
 
-            if (url.includes(Endpoints.OPERATIONS_LIST)) {
+            if (url === Endpoints.OPERATIONS_SUMMARY) {
                 return Promise.resolve({ data: [...nestedMemoryOperations] });
             }
 
@@ -409,7 +422,7 @@ describe('report matching under a filtered performance tab', () => {
                 });
             }
 
-            if (url.includes(Endpoints.OPERATIONS_LIST)) {
+            if (url === Endpoints.OPERATIONS_SUMMARY) {
                 return Promise.resolve({ data: [...memoryOperations] });
             }
 
@@ -423,7 +436,7 @@ describe('report matching under a filtered performance tab', () => {
 
         const { result } = renderWithView(() => {
             const opToPerfIds = useOpToPerfIdFiltered();
-            const operations = useOperationsList();
+            const operations = useOperationsSummary();
             const devices = useDevices();
             const linkedReport = useLinkedPerformanceReport();
             identities.add(opToPerfIds);
