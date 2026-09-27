@@ -97,6 +97,8 @@ function renderReport({
 afterEach(cleanup);
 
 beforeEach(() => {
+    // The table's window virtualiser re-asserts the scroll position on mount; jsdom has no scrolling
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
     (useGetNPEManifest as Mock).mockReturnValue({ data: [], error: null });
     (useOpToPerfIdFiltered as Mock).mockReturnValue([]);
     (useOperationsList as Mock).mockReturnValue({ data: [] });

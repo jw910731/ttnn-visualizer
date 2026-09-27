@@ -62,46 +62,75 @@ const KERNEL_RISC_KEYS: ColumnKeys[] = [
 // colour, so a near-miss RISC stays legible even when it isn't accented.
 const KERNEL_CRITICAL_PATH_SHARE = 0.9;
 
+export type PerfCellValue = TypedPerfTableRow[ColumnKeys];
+
+export type OperationsById = ReadonlyMap<number, OperationDescription>;
+
+/**
+ * Whether `formatCell` renders nothing for this cell regardless of the column's own formatting.
+ * Shared with the table's column sizing so a cell the table leaves blank never widens a column.
+ */
+export const isSuppressedCell = (row: TypedPerfTableRow, key: ColumnKeys, isFirstOfOpRun: boolean = true): boolean => {
+    const value = row[key];
+
+    if (value === null || value === '' || Number.isNaN(value)) {
+        return true;
+    }
+
+    // L1 pressure values reflect a TTNN-op snapshot; suppress repeats inside the same op group.
+    if (!isFirstOfOpRun && key === ColumnKeys.L1Fullness) {
+        return true;
+    }
+
+    // Signposts only have a few meaningful columns
+    if (row.op_type === OpType.SIGNPOST && key !== ColumnKeys.Id && key !== ColumnKeys.OpCode) {
+        return true;
+    }
+
+    // Host Ops only have a few meaningful columns
+    return isHostOp(row.bound) && key !== ColumnKeys.Id && key !== ColumnKeys.OpCode && key !== ColumnKeys.Bound;
+};
+
+/** The plain text `formatCell` renders for a column without a bespoke cell: grouped, rounded and with its unit. */
+export const formatCellText = (value: PerfCellValue, column: ColumnDefinition): string => {
+    const { key, unit, decimals } = column;
+    let formatted: string;
+
+    if (typeof value === 'number' && key !== ColumnKeys.Id) {
+        formatted = formatSize(value, decimals);
+    } else {
+        formatted = value?.toString() || '';
+    }
+
+    if (unit) {
+        if (unit === '%') {
+            formatted = formatPercentage(Number(value), decimals);
+        } else {
+            formatted += ` ${unit}`;
+        }
+    }
+
+    return formatted;
+};
+
 // https://github.com/tenstorrent/ttnn-visualizer/issues/1267
 export const formatCell = (
     row: TypedPerfTableRow,
     column: ColumnDefinition,
-    operations?: OperationDescription[],
+    operationsById?: OperationsById | null,
     highlight?: string | null,
     isFirstOfOpRun: boolean = true,
 ): JSX.Element | string => {
-    const { key, unit, decimals } = column;
-    const isSignpost = row.op_type === OpType.SIGNPOST;
-    const isHost = isHostOp(row.bound);
+    const { key, decimals } = column;
 
     if (key === ColumnKeys.Flags) {
         return <PerfHeuristicFlags row={row} />;
     }
 
     const value = row[key];
-    let formatted: string;
 
-    if (value === null || value === '' || Number.isNaN(value)) {
+    if (isSuppressedCell(row, key, isFirstOfOpRun)) {
         return '';
-    }
-
-    // L1 pressure values reflect a TTNN-op snapshot; suppress repeats inside the same op group.
-    if (!isFirstOfOpRun && key === ColumnKeys.L1Fullness) {
-        return '';
-    }
-
-    // Signposts only have a few meaningful columns
-    if (isSignpost) {
-        if (key !== ColumnKeys.Id && key !== ColumnKeys.OpCode) {
-            return '';
-        }
-    }
-
-    // Host Ops only have a few meaningful columns
-    if (isHost) {
-        if (key !== ColumnKeys.Id && key !== ColumnKeys.OpCode && key !== ColumnKeys.Bound) {
-            return '';
-        }
     }
 
     if (key === ColumnKeys.BufferType) {
@@ -124,12 +153,12 @@ export const formatCell = (
         );
     }
 
-    if (key === ColumnKeys.OP && operations) {
+    if (key === ColumnKeys.OP && operationsById) {
         return (
             <Tooltip
                 content={
                     <div className='op-tooltip'>
-                        {value} {getOperationDetails(operations, value as number)}
+                        {value} {getOperationDetails(operationsById, value as number)}
                     </div>
                 }
                 usePortal={false}
@@ -236,21 +265,7 @@ export const formatCell = (
         );
     }
 
-    if (typeof value === 'number' && key !== ColumnKeys.Id) {
-        formatted = formatSize(value, decimals);
-    } else {
-        formatted = value?.toString() || '';
-    }
-
-    if (unit) {
-        if (unit === '%') {
-            formatted = formatPercentage(Number(value), decimals);
-        } else {
-            formatted += ` ${unit}`;
-        }
-    }
-
-    return getCellMarkup(formatted, getCellColour(row, key), highlight);
+    return getCellMarkup(formatCellText(value, column), getCellColour(row, key), highlight);
 };
 
 export const getCellMarkup = (text: string, colour?: CellColour, highlight?: string | null) => {
@@ -606,8 +621,24 @@ export function evaluateFidelity(
     return ['unknown', `Using ${mathFidelity} for ${input0Datatype}/${input1Datatype} => ${outputDatatype}`];
 }
 
-export function getOperationDetails(operations: OperationDescription[], id: number) {
-    const matchingOp = operations?.find((op) => op.id === id);
+/**
+ * Indexes operations by id for the OP column, which looks one up for every row it renders. A repeated
+ * id keeps its first operation.
+ */
+export function getOperationsById(operations: OperationDescription[]): OperationsById {
+    const operationsById = new Map<number, OperationDescription>();
+
+    for (const operation of operations) {
+        if (!operationsById.has(operation.id)) {
+            operationsById.set(operation.id, operation);
+        }
+    }
+
+    return operationsById;
+}
+
+export function getOperationDetails(operationsById: OperationsById, id: number) {
+    const matchingOp = operationsById.get(id);
 
     return matchingOp ? `${matchingOp.name} (${matchingOp.operationFileIdentifier})` : '';
 }
@@ -618,6 +649,31 @@ export function getAxisUpperRange(arrays: Array<unknown[]>): number {
 }
 
 export const isHostOp = (bound: BoundType | null) => bound === BoundType.HOST;
+
+/** Whether the table follows this row with its matmul advice when advice is switched on. */
+export const hasMatmulAdvice = (row: TypedPerfTableRow) => row.op_code.includes('Matmul');
+
+export const getPerfCellClassName = (column: ColumnDefinition) =>
+    classNames('cell', {
+        'align-right': column.key === ColumnKeys.MathFidelity,
+    });
+
+/**
+ * Unique, stable keys for the table's rows. Signpost placeholders injected by the signpost filter reuse
+ * the id of the signpost they stand for, so a repeated identity takes an occurrence suffix.
+ */
+export const getRowGroupKeys = (rows: TypedPerfTableRow[]): string[] => {
+    const occurrencesByIdentity = new Map<string, number>();
+
+    return rows.map((row) => {
+        const identity = `${row.op_type}:${row.id}`;
+        const occurrences = occurrencesByIdentity.get(identity) ?? 0;
+
+        occurrencesByIdentity.set(identity, occurrences + 1);
+
+        return occurrences === 0 ? identity : `${identity}#${occurrences}`;
+    });
+};
 
 export const getStandardViewCounts = (
     data: TypedPerfTableRow[],

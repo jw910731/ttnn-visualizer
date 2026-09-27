@@ -77,6 +77,8 @@ function renderTable(rows: TypedPerfTableRow[], options: RenderTableOptions = {}
 afterEach(cleanup);
 
 beforeEach(() => {
+    // The table's window virtualiser re-asserts the scroll position on mount; jsdom has no scrolling
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
     (useGetNPEManifest as Mock).mockReturnValue({ data: [], error: null });
     (useOperationsList as Mock).mockReturnValue({ data: [] });
     (usePerfMeta as Mock).mockReturnValue({ data: null, isLoading: false });
@@ -259,11 +261,10 @@ describe('PerfTable tensor-drawer trigger column', () => {
             </TestProviders>,
         );
 
-        // Matmul cell renders inside the table body; the drawer header still
+        // Matmul cell renders inside the table; the drawer header still
         // surfaces the row's op code from the previous selection until the
         // Drawer animates closed, so scope the lookup to the table.
-        const tableBody = screen.getByRole('table').querySelector('tbody')!;
-        expect(within(tableBody).queryByText('Matmul')).not.toBeInTheDocument();
+        expect(within(screen.getByRole('table')).queryByText('Matmul')).not.toBeInTheDocument();
         expect(screen.getByTestId('selected-row-probe')).toHaveTextContent('null');
     });
 });

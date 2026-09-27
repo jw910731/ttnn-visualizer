@@ -2,31 +2,47 @@
 //
 // SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
 
-import { Button, ButtonVariant, Icon, Intent, Size, Tooltip } from '@blueprintjs/core';
+import { Button, ButtonVariant, Icon, Intent, Size } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
 import classNames from 'classnames';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { Fragment, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router';
 import 'styles/components/PerfReport.scss';
-import { OpType, PATTERN_COUNT } from '../../definitions/Performance';
-import { ColumnDefinition, ColumnKeys, PerfTableFilters, comparisonKeys } from '../../definitions/PerfTable';
+import { ColumnKeys, PerfTableFilters } from '../../definitions/PerfTable';
 import { TypedPerfTableRow } from '../../model/PerfTable';
 import ROUTES from '../../definitions/Routes';
-import { TEST_IDS } from '../../definitions/TestIds';
-import isValidNumber from '../../functions/isValidNumber';
 import { formatPercentage, formatSize } from '../../functions/math';
-import { formatCell, isHostOp } from '../../functions/perfFunctions';
+import { getOperationsById, isHostOp } from '../../functions/perfFunctions';
 import { getEligiblePerfColumns, getFooterColumns, getVisiblePerfColumns } from '../../functions/perfTableColumns';
 import { useGetNPEManifest, useOpToPerfIdFiltered, useOperationsList } from '../../hooks/useAPI';
+import usePerfTableColumnSizing from '../../hooks/usePerfTableColumnSizing';
 import useSortTable, { SortingDirection } from '../../hooks/useSortTable';
-import { OperationDescription } from '../../model/APIData';
+import { NPEManifestEntry } from '../../model/NPEModel';
 import { hiddenPerfTableColumnsAtom, hideHostOpsAtom, mergeDevicesAtom, selectedPerfRowIdAtom } from '../../store/app';
 import PerfDeviceArchitecture from './PerfDeviceArchitecture';
 import PerfMultiDeviceNotice from './PerfMultiDeviceNotice';
+import PerfTableBody from './PerfTableBody';
 import PerfTableSkeleton from './PerfTableSkeleton';
 import PerfTensorDrawer from './PerfTensorDrawer';
 import PerfTableToolbar from './PerfTableToolbar';
+
+const EMPTY_ROWS: TypedPerfTableRow[] = [];
+const EMPTY_COMPARISON_DATA: TypedPerfTableRow[][] = [];
+const EMPTY_NPE_MANIFEST: NPEManifestEntry[] = [];
+
+// A call count listed more than once links to its first manifest entry.
+const getNpeFileByGlobalCallCount = (npeManifest: NPEManifestEntry[] | null | undefined) => {
+    const npeFileByGlobalCallCount = new Map<number, string>();
+
+    for (const entry of npeManifest ?? EMPTY_NPE_MANIFEST) {
+        if (!npeFileByGlobalCallCount.has(entry.global_call_count)) {
+            npeFileByGlobalCallCount.set(entry.global_call_count, entry.file);
+        }
+    }
+
+    return npeFileByGlobalCallCount;
+};
 
 interface PerformanceTableProps {
     data: TypedPerfTableRow[];
@@ -109,9 +125,10 @@ const PerformanceTable = ({
         return firstRows;
     }, [tableFields]);
 
+    // Unsorted on purpose: eligibility is order-independent, so a sort click leaves the columns alone
     const rowsForColumnEligibility = useMemo(
-        () => [...tableFields, ...comparisonDataTableFields.flat()],
-        [tableFields, comparisonDataTableFields],
+        () => [...(data ?? EMPTY_ROWS), ...(comparisonData ?? EMPTY_COMPARISON_DATA).flat()],
+        [data, comparisonData],
     );
 
     const eligibleColumns = useMemo(
@@ -160,88 +177,32 @@ const PerformanceTable = ({
         }
     }, [canShowTensorDrawer, activeReportRows, selectedPerfRowId, setSelectedPerfRowId]);
 
-    const getTensorDrawerStatus = (row: TypedPerfTableRow): { canOpen: boolean; reason: string } => {
-        if (!isReportsSynced) {
-            return { canOpen: false, reason: 'Load a synced profiler report to see tensor details' };
-        }
+    const operationsById = useMemo(() => (operationsList ? getOperationsById(operationsList) : null), [operationsList]);
 
-        if (row.raw_op_code.includes('MISSING')) {
-            return { canOpen: false, reason: 'No tensor data for missing operations' };
-        }
+    const npeFileByGlobalCallCount = useMemo(() => getNpeFileByGlobalCallCount(npeManifest), [npeManifest]);
 
-        if (!isValidNumber(row.op)) {
-            return { canOpen: false, reason: 'No linked profiler operation for this row' };
-        }
+    const handleOpenNpeTimeline = useCallback((file: string) => navigate(`${ROUTES.NPE}/${file}`), [navigate]);
 
-        return { canOpen: true, reason: 'View input/output tensor details' };
-    };
+    // A new layout remounts the body, and with it the virtualiser, so no height measured under another
+    // layout outlives it. See PerfTableBody.
+    const tableBodyLayoutKey = useMemo(
+        () =>
+            [comparisonDataTableFields.length, provideMatmulAdvice, ...visibleColumns.map((column) => column.key)].join(
+                ',',
+            ),
+        [comparisonDataTableFields.length, provideMatmulAdvice, visibleColumns],
+    );
 
-    const renderTensorDrawerTrigger = (row: TypedPerfTableRow) => {
-        if (row.op_type === OpType.SIGNPOST) {
-            return null;
-        }
-
-        const status = getTensorDrawerStatus(row);
-
-        return (
-            <Tooltip content={status.reason}>
-                {/* span wrapper lets the Tooltip attach to disabled buttons (Blueprint quirk) */}
-                <span className='perf-tensor-trigger-wrapper'>
-                    <Button
-                        className='perf-tensor-trigger'
-                        disabled={!status.canOpen}
-                        icon={IconNames.FLOW_LINEAR}
-                        intent={Intent.PRIMARY}
-                        variant={ButtonVariant.MINIMAL}
-                        size={Size.SMALL}
-                        aria-label={`View tensor details for ${row.raw_op_code}`}
-                        data-testid={TEST_IDS.PERF_TENSOR_DRAWER_OPEN_BUTTON}
-                        onClick={() => setSelectedPerfRowId(row.id)}
-                    />
-                </span>
-            </Tooltip>
-        );
-    };
-
-    const cellFormattingProxy = (
-        row: TypedPerfTableRow,
-        column: ColumnDefinition,
-        operations?: OperationDescription[],
-        highlight?: string | null,
-        isFirstOfOpRun: boolean = true,
-    ) => {
-        const { key } = column;
-
-        if (key === ColumnKeys.GlobalCallCount) {
-            // TODO: this is an inefficient way of doing things but its also temporary. will update next iteration
-            const value = parseInt(String(row[key]), 10) || -1; // apparently npe is using 0 as a default value as opposed to no value.
-            const manifestRecord = npeManifest?.find((el) => {
-                return el.global_call_count === value;
-            });
-
-            if (manifestRecord) {
-                return (
-                    npeManifest &&
-                    npeManifest.length > 0 && (
-                        <Tooltip content={`Launch NPE timeline for ${row.raw_op_code}`}>
-                            <Button
-                                icon={IconNames.Random}
-                                onClick={() => navigate(`${ROUTES.NPE}/${manifestRecord.file}`)}
-                                variant={ButtonVariant.MINIMAL}
-                                className='graph-button'
-                                aria-label={`Launch NPE timeline for ${row.raw_op_code}`}
-                                data-testid={TEST_IDS.PERF_NPE_LINK}
-                            />
-                        </Tooltip>
-                    )
-                );
-            }
-
-            return null;
-        }
-
-        return formatCell(row, column, operations, highlight, isFirstOfOpRun);
-    };
+    const sizing = usePerfTableColumnSizing({
+        rows: data ?? EMPTY_ROWS,
+        comparisonRows: comparisonData ?? EMPTY_COMPARISON_DATA,
+        visibleColumns,
+        hasOperations: operationsById !== null,
+        npeFileByGlobalCallCount,
+        isPrimaryActiveReport,
+        activeReportComparisonIndex,
+        provideMatmulAdvice,
+    });
 
     const renderTable = () => {
         if (isLoading) {
@@ -334,103 +295,24 @@ const PerformanceTable = ({
                     </tr>
                 </thead>
 
-                <tbody>
-                    {tableFields?.map((row, i) => {
-                        const isFirstOfOpRun = row.op === undefined || firstRowOfOpRun.has(row);
-                        const isSignpost = row.op_type === OpType.SIGNPOST;
-                        const isPrimarySelected = isPrimaryActiveReport && row.id === selectedPerfRowId;
-
-                        return (
-                            <Fragment key={i}>
-                                <tr
-                                    className={classNames({
-                                        'missing-data': row.raw_op_code.includes('MISSING'),
-                                        'signpost-op': isSignpost,
-                                        'is-selected': isPrimarySelected,
-                                    })}
-                                >
-                                    <td className='cell'>{isPrimaryActiveReport && renderTensorDrawerTrigger(row)}</td>
-                                    {visibleColumns.map((h) => (
-                                        <td
-                                            key={h.key}
-                                            className={classNames('cell', {
-                                                'align-right': h.key === ColumnKeys.MathFidelity,
-                                            })}
-                                        >
-                                            {cellFormattingProxy(
-                                                row,
-                                                h,
-                                                operationsList,
-                                                filters?.[h.key],
-                                                isFirstOfOpRun,
-                                            )}
-                                        </td>
-                                    ))}
-                                </tr>
-
-                                {comparisonDataTableFields?.length > 0 &&
-                                    comparisonDataTableFields.map((dataset, index) => {
-                                        const subRow = dataset[i];
-                                        const isActiveReportRow = index === activeReportComparisonIndex;
-                                        const isSubRowSelected = isActiveReportRow && subRow?.id === selectedPerfRowId;
-
-                                        return (
-                                            <tr
-                                                key={`comparison-${i}-${index}`}
-                                                className={classNames(
-                                                    {
-                                                        'missing-data': subRow?.raw_op_code?.includes('MISSING'),
-                                                        'signpost-op': subRow?.op_type === OpType.SIGNPOST,
-                                                        'is-selected': isSubRowSelected,
-                                                    },
-                                                    'comparison-row',
-                                                    `pattern-${index >= PATTERN_COUNT ? index - PATTERN_COUNT : index}`,
-                                                )}
-                                            >
-                                                <td className='cell'>
-                                                    {isActiveReportRow && subRow
-                                                        ? renderTensorDrawerTrigger(subRow)
-                                                        : null}
-                                                </td>
-                                                {visibleColumns.map((h) => (
-                                                    <td
-                                                        key={h.key}
-                                                        className={classNames('cell', {
-                                                            'align-right': h.key === ColumnKeys.MathFidelity,
-                                                        })}
-                                                    >
-                                                        {comparisonKeys.includes(h.key) &&
-                                                            subRow &&
-                                                            formatCell(
-                                                                subRow,
-                                                                h,
-                                                                operationsList,
-                                                                filters?.[h.key],
-                                                                true,
-                                                            )}
-                                                    </td>
-                                                ))}
-                                            </tr>
-                                        );
-                                    })}
-                                {provideMatmulAdvice && row.op_code.includes('Matmul') && (
-                                    <tr>
-                                        <td
-                                            colSpan={visibleColumns.length + 1}
-                                            className='cell advice'
-                                        >
-                                            <ul>
-                                                {row?.advice.map((advice, j) => (
-                                                    <li key={`advice-${j}`}>{advice}</li>
-                                                ))}
-                                            </ul>
-                                        </td>
-                                    </tr>
-                                )}
-                            </Fragment>
-                        );
-                    })}
-                </tbody>
+                <PerfTableBody
+                    key={tableBodyLayoutKey}
+                    rows={tableFields}
+                    comparisonDatasets={comparisonDataTableFields}
+                    sizing={sizing}
+                    visibleColumns={visibleColumns}
+                    filters={filters}
+                    operationsById={operationsById}
+                    npeFileByGlobalCallCount={npeFileByGlobalCallCount}
+                    firstRowOfOpRun={firstRowOfOpRun}
+                    selectedPerfRowId={selectedPerfRowId}
+                    isPrimaryActiveReport={isPrimaryActiveReport}
+                    activeReportComparisonIndex={activeReportComparisonIndex}
+                    isReportsSynced={isReportsSynced}
+                    provideMatmulAdvice={provideMatmulAdvice}
+                    onSelectRow={setSelectedPerfRowId}
+                    onOpenNpeTimeline={handleOpenNpeTimeline}
+                />
 
                 <tfoot className='table-footer'>
                     <tr>

@@ -51,9 +51,8 @@ $perf-table-min-width: 1240px;
 
         // The floor sits on the table rather than on `.perf-report` so a narrow viewport
         // scrolls the table inside its own `overflow: auto` container instead of the whole
-        // document. Without it the table tracks the container, and every width change --
-        // collapsing the navigation rail is one, on demand -- re-runs auto table layout
-        // across every unvirtualised row.
+        // document. Without it the table tracks the container, squeezing and re-wrapping its
+        // columns on every width change -- collapsing the navigation rail is one, on demand.
         min-width: $perf-table-min-width;
 
         .skeleton-cell {
@@ -187,12 +186,59 @@ $perf-table-min-width: 1240px;
                     background-image: $row-pattern-2;
                 }
             }
+        }
 
-            &:last-child {
+        // Only the table's final row drops its rule. The virtualised table gives each row group
+        // its own tbody, where a bare `tr:last-child` would strip every group's closing border.
+        &:last-of-type > tr:last-child {
+            border-bottom: none;
+
+            > td {
                 border-bottom: none;
+            }
+        }
 
-                > td {
-                    border-bottom: none;
+        // The virtualiser corrects the scroll offset itself when a group above the viewport is
+        // measured; browser scroll anchoring compensating for the same change would apply it twice.
+        &.perf-table-row-group,
+        &.perf-table-spacer {
+            overflow-anchor: none;
+        }
+
+        &.perf-table-spacer,
+        &.perf-table-sizer {
+            tr:hover {
+                background-color: transparent;
+            }
+        }
+
+        &.perf-table-spacer td {
+            padding: 0;
+            border: none;
+        }
+
+        // Laid out only for the column widths it carries (see PerfTableSizer): invisible and zero-height.
+        &.perf-table-sizer {
+            visibility: hidden;
+
+            .cell {
+                padding-top: 0;
+                padding-bottom: 0;
+                border-bottom: none;
+            }
+
+            .perf-table-sizer-sample {
+                height: 0;
+                overflow: hidden;
+            }
+
+            .perf-table-sizer-text {
+                &::before {
+                    content: attr(data-text);
+                }
+
+                &.is-no-wrap {
+                    white-space: nowrap;
                 }
             }
         }
