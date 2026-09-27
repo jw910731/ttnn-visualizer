@@ -7,12 +7,15 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import traceback
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from io import StringIO
 from pathlib import Path
 from typing import (
+    Any,
     Dict,
+    Hashable,
     List,
     Literal,
     Optional,
@@ -21,8 +24,18 @@ from typing import (
     overload,
 )
 
+import matplotlib
+import orjson
 import pandas as pd
 import zstd
+
+# tt-perf-report imports pyplot at module scope and plots every stacked report to a
+# PNG that we delete unread. Left to choose, matplotlib picks the Cocoa GUI backend
+# on macOS, which a forked gunicorn worker must never start, so the backend is
+# pinned before that import can resolve one.
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 from tt_perf_report import perf_report
 from ttnn_visualizer.exceptions import (
     DataFormatError,
@@ -55,6 +68,71 @@ CSV_CHUNK_SIZE = 50_000
 # and still cannot be reached by a real log. Past it, starts are counted rather
 # than kept, so the total reports what it could pair and says what it dropped.
 MAX_OPEN_ZONE_STARTS = 200_000
+
+# Serialised perf reports kept per worker: room for the filter combinations a
+# session toggles between and a comparison report beside the active one.
+PERF_REPORT_CACHE_MAX_ENTRIES = 4
+
+# Uploads have no size limit by default, so the count alone would let a few large
+# captures pin hundreds of MB in every worker for its lifetime. Four reports of an
+# 18k-op capture (~28 MB each) fit, so at that size the count still decides; a
+# single report above the budget is served uncached, as every report was before.
+PERF_REPORT_CACHE_MAX_BYTES = 128 * 1024 * 1024
+
+
+class _BoundedBytesCache:
+    """Least-recently-used map of serialised payloads, safe to share across requests.
+
+    Bounded both by entry count and by the total size of the payloads it holds.
+    The lock covers dictionary operations only and is never held while a payload
+    is built, so two misses on one key both build rather than queue for seconds,
+    and a gevent worker cannot stall its hub behind a slow report.
+    """
+
+    def __init__(self, max_entries: int, max_bytes: int):
+        self._max_entries = max_entries
+        self._max_bytes = max_bytes
+        self._lock = threading.Lock()
+        self._payload_by_key: "OrderedDict[Hashable, bytes]" = OrderedDict()
+        self._total_bytes = 0
+
+    def get(self, key: Hashable) -> Optional[bytes]:
+        with self._lock:
+            payload = self._payload_by_key.get(key)
+            if payload is not None:
+                self._payload_by_key.move_to_end(key)
+            return payload
+
+    def put(self, key: Hashable, payload: bytes) -> None:
+        with self._lock:
+            replaced = self._payload_by_key.pop(key, None)
+            if replaced is not None:
+                self._total_bytes -= len(replaced)
+            # Storing it would evict everything else and still exceed the budget.
+            if len(payload) > self._max_bytes:
+                return
+            self._payload_by_key[key] = payload
+            self._total_bytes += len(payload)
+            while (
+                len(self._payload_by_key) > self._max_entries
+                or self._total_bytes > self._max_bytes
+            ):
+                _, evicted = self._payload_by_key.popitem(last=False)
+                self._total_bytes -= len(evicted)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._payload_by_key)
+
+    @property
+    def total_bytes(self) -> int:
+        with self._lock:
+            return self._total_bytes
+
+
+_serialised_report_cache = _BoundedBytesCache(
+    PERF_REPORT_CACHE_MAX_ENTRIES, PERF_REPORT_CACHE_MAX_BYTES
+)
 
 
 class LocalCSVQueryRunner:
@@ -970,8 +1048,69 @@ class OpsPerformanceReportQueries:
 
         return processed_row
 
+    @staticmethod
+    def _report_cache_key(instance, report_kwargs: Dict[str, Any]) -> Tuple:
+        """Identify a report by the capture it is read from and every argument.
+
+        The file is resolved here, after the caller has pointed the instance at
+        the report it wants, and statted before the build reads it: a capture
+        rewritten mid-build leaves whatever was read under the old stat, which
+        never matches again, rather than stale rows under the new one. The
+        arguments are taken whole rather than by name so a parameter added later
+        cannot be left out of the key.
+        """
+        file_path = OpsPerformanceQueries.get_local_ops_perf_file_path(instance)
+        file_stat = os.stat(file_path)
+        return (
+            file_path,
+            file_stat.st_mtime_ns,
+            file_stat.st_size,
+            tuple(sorted(report_kwargs.items())),
+        )
+
+    @classmethod
+    def get_serialised_report(cls, instance, **kwargs) -> bytes:
+        """`generate_report` as JSON bytes, reused while its capture is unchanged.
+
+        A build takes seconds and around a gigabyte of peak memory on a large
+        capture, and the performance page asks again on every filter toggle and
+        remount (#1886). Only a complete build is kept. One that raised answers
+        422 and one that logged a failed step and left its part empty answers as
+        it always has, and both are rebuilt on the next request: the failure may
+        be transient (memory pressure, a temp-file read), and a kept copy would
+        be served until the capture changed, which a hosted user cannot do.
+        """
+        cache_key: Optional[Tuple] = None
+        try:
+            cache_key = cls._report_cache_key(instance, kwargs)
+        except (PerformanceReportNotLoadedException, OSError):
+            # Nothing on disk to key on; the build raises what it always has.
+            pass
+        else:
+            cached = _serialised_report_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        report, complete = cls._build_report(instance, **kwargs)
+        payload = orjson.dumps(report)
+        if cache_key is not None and complete:
+            _serialised_report_cache.put(cache_key, payload)
+        return payload
+
     @classmethod
     def generate_report(cls, instance, **kwargs):
+        report, _complete = cls._build_report(instance, **kwargs)
+        return report
+
+    @classmethod
+    def _build_report(cls, instance, **kwargs) -> Tuple[Dict[str, Any], bool]:
+        """The report, and whether every step that reads it back succeeded.
+
+        Reading tt-perf-report's output and the raw capture is best-effort: a
+        step that fails is logged and its part of the report left empty, so the
+        page still loads. The flag is how a caller that keeps reports tells that
+        apart from a report that is empty because the capture made it so.
+        """
         raw_csv = OpsPerformanceQueries.get_raw_csv(instance)
         csv_file = StringIO(raw_csv)
 
@@ -1044,6 +1183,14 @@ class OpsPerformanceReportQueries:
                 logger.error(f"Error loading report: {e}")
                 logger.error(f"Full traceback:\n{traceback.format_exc()}")
                 raise DataFormatError(e)
+            finally:
+                # The library draws on pyplot's global figure registry and never
+                # closes what it drew, so every report would pin ~18 MB of figure
+                # for the life of the worker. It never hands the figure back, and
+                # nothing else in the app keeps one open, hence "all".
+                plt.close("all")
+
+            complete = True
 
             try:
                 ops_perf_results, signposts = cls.extract_signposts(csv_file)
@@ -1051,10 +1198,11 @@ class OpsPerformanceReportQueries:
                 logger.error(f"Error extracting signposts: {e}")
                 ops_perf_results = []
                 signposts = []
+                complete = False
 
             logger.info(f"Found {len(signposts)} signposts...")
 
-            report = []
+            report: List[Dict[str, Any]] = []
 
             try:
                 logger.info(f"Processing CSV output file: {csv_output_file.name}")
@@ -1133,6 +1281,7 @@ class OpsPerformanceReportQueries:
             except Exception as e:
                 logger.error(f"Error processing CSV output file: {e}")
                 report = []
+                complete = False
 
             stacked_report = []
 
@@ -1181,14 +1330,18 @@ class OpsPerformanceReportQueries:
                 except Exception as e:
                     logger.error(f"Error processing stacked report: {e}")
                     # Don't raise, just log - stacked report is optional
+                    complete = False
             else:
                 logger.info("Skipping stacked report processing as per configuration")
 
-            return {
-                "report": report,
-                "stacked_report": stacked_report,
-                "signposts": signposts,
-            }
+            return (
+                {
+                    "report": report,
+                    "stacked_report": stacked_report,
+                    "signposts": signposts,
+                },
+                complete,
+            )
 
         finally:
             # Ensure cleanup always happens, even if exceptions are raised

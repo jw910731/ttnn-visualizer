@@ -44,9 +44,10 @@ export interface PerformanceReportParams {
  * Expect that on the first toggle of any of those controls, not as a rare case:
  * `RangeSlider` is mounted app-wide and subscribes to both queries, so once they
  * diverge the app holds two live report queries for the rest of the session, each
- * retaining a full `PerfTableRow[]` under `staleTime: Infinity`. Report generation
- * is uncached server-side and CPU-bound on a single worker, so the fix is to
- * memoise it there (#1886) rather than to unpin these filters.
+ * retaining a full `PerfTableRow[]` under `staleTime: Infinity`. The server keeps a
+ * small per-worker cache of finished reports keyed on the capture and every
+ * parameter (#1886), so a diverged key costs one extra build per parameter set
+ * rather than one per request; pinning these filters keeps it to none.
  */
 export const LINKED_PERFORMANCE_REPORT_FILTERS = {
     startSignpost: null,

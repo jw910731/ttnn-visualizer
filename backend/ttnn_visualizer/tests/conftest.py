@@ -13,7 +13,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 import pytest
-from ttnn_visualizer import event_logging
+from ttnn_visualizer import csv_queries, event_logging
 from ttnn_visualizer.app import create_app
 from ttnn_visualizer.event_logging import (
     RECORDING_DISABLED_ENV_VAR,
@@ -46,6 +46,23 @@ def app():
 def client(app):
     """Flask test client for API requests (GET, POST, etc.)."""
     return app.test_client()
+
+
+@pytest.fixture(autouse=True)
+def perf_report_cache(monkeypatch):
+    """Give every test its own empty serialised perf-report cache.
+
+    The production cache is process-wide and keyed on a capture's path and stat, so
+    a test that fakes tt-perf-report over a shared fixture would otherwise hand its
+    fake rows to any later test reading the same capture. Returned so a test can
+    inspect what was stored.
+    """
+    cache = csv_queries._BoundedBytesCache(
+        csv_queries.PERF_REPORT_CACHE_MAX_ENTRIES,
+        csv_queries.PERF_REPORT_CACHE_MAX_BYTES,
+    )
+    monkeypatch.setattr(csv_queries, "_serialised_report_cache", cache)
+    return cache
 
 
 @pytest.fixture

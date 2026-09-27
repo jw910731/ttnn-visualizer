@@ -1270,7 +1270,7 @@ def get_performance_results_report(instance: Instance):
     _apply_requested_performance_name(instance)
 
     try:
-        report = OpsPerformanceReportQueries.generate_report(
+        payload = OpsPerformanceReportQueries.get_serialised_report(
             instance,
             start_signpost=start_signpost,
             print_signposts=print_signposts,
@@ -1283,7 +1283,7 @@ def get_performance_results_report(instance: Instance):
     except DataFormatError as error:
         return response_unprocessable_entity(str(error))
 
-    return Response(orjson.dumps(report), mimetype="application/json")
+    return Response(payload, mimetype="application/json")
 
 
 # this is no longer used atm. keeping for now until confirmed "not needed"
